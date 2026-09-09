@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.nitro
+.tanstack-start
+src/routeTree.gen.ts
+drizzle/migrations/meta
