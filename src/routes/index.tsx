@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import {
   AlertCircle,
@@ -163,6 +163,8 @@ function HomePage() {
 
   const [activeSection, setActiveSection] = useState<string>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const isClickNavigatingRef = useRef<boolean>(false);
+  const clickNavTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const validSections = ["home", "features", "retailers", "consumers", "products", "pricing"];
@@ -171,6 +173,7 @@ function HomePage() {
     const initHash = window.location.hash.replace("#", "");
     if (validSections.includes(initHash)) {
       setActiveSection(initHash);
+      isClickNavigatingRef.current = true;
       const targetEl = document.getElementById(initHash);
       if (targetEl) {
         setTimeout(() => {
@@ -178,7 +181,12 @@ function HomePage() {
           const elementPosition = targetEl.getBoundingClientRect().top;
           const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
           window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+          setTimeout(() => {
+            isClickNavigatingRef.current = false;
+          }, 800);
         }, 150);
+      } else {
+        isClickNavigatingRef.current = false;
       }
     } else {
       setActiveSection("home");
@@ -200,8 +208,14 @@ function HomePage() {
     let ticking = false;
 
     const handleScroll = () => {
+      if (isClickNavigatingRef.current) return;
       if (!ticking) {
         window.requestAnimationFrame(() => {
+          if (isClickNavigatingRef.current) {
+            ticking = false;
+            return;
+          }
+
           // If near top of page (hero area)
           if (window.scrollY < 220) {
             setActiveSection("home");
@@ -246,6 +260,13 @@ function HomePage() {
     setActiveSection(id);
     setMobileMenuOpen(false);
 
+    // Block scrollspy override during smooth scrolling
+    isClickNavigatingRef.current = true;
+    if (clickNavTimeoutRef.current) clearTimeout(clickNavTimeoutRef.current);
+    clickNavTimeoutRef.current = setTimeout(() => {
+      isClickNavigatingRef.current = false;
+    }, 1200);
+
     if (id === "home") {
       window.history.pushState(null, "", window.location.pathname);
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -289,7 +310,7 @@ function HomePage() {
                   key={item.id}
                   href={item.href}
                   onClick={(e) => handleNavClick(e, item.id)}
-                  className={`transition-colors ${
+                  className={`outline-none focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 rounded-sm transition-colors ${
                     isActive
                       ? "text-blue-600 font-semibold"
                       : "text-slate-600 hover:text-slate-900 font-medium"
@@ -363,7 +384,7 @@ function HomePage() {
                   key={item.id}
                   href={item.href}
                   onClick={(e) => handleNavClick(e, item.id)}
-                  className={`block px-3 py-2 rounded-lg text-sm transition-colors ${
+                  className={`block px-3 py-2 rounded-lg text-sm outline-none focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition-colors ${
                     isActive
                       ? "text-blue-600 font-semibold bg-blue-50"
                       : "text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium"
