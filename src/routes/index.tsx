@@ -17,6 +17,7 @@ import {
   Info,
   Layers,
   Leaf,
+  Menu,
   Play,
   PlayCircle,
   QrCode,
@@ -29,6 +30,7 @@ import {
   Store,
   Users,
   Video,
+  X,
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -159,6 +161,115 @@ function HomePage() {
     }
   }
 
+  const [activeSection, setActiveSection] = useState<string>("home");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const validSections = ["home", "features", "retailers", "consumers", "products", "pricing"];
+
+    // 1. Initial hash detection on page load / refresh
+    const initHash = window.location.hash.replace("#", "");
+    if (validSections.includes(initHash)) {
+      setActiveSection(initHash);
+      const targetEl = document.getElementById(initHash);
+      if (targetEl) {
+        setTimeout(() => {
+          const headerOffset = 85;
+          const elementPosition = targetEl.getBoundingClientRect().top;
+          const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+          window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+        }, 150);
+      }
+    } else {
+      setActiveSection("home");
+    }
+
+    // 2. Hash change listener (back/forward history)
+    const handleHashChange = () => {
+      const currentHash = window.location.hash.replace("#", "");
+      if (validSections.includes(currentHash)) {
+        setActiveSection(currentHash);
+      } else if (!currentHash) {
+        setActiveSection("home");
+      }
+    };
+    window.addEventListener("hashchange", handleHashChange);
+
+    // 3. Scroll spy listener
+    const sectionIds = ["pricing", "products", "consumers", "retailers", "features"];
+    let ticking = false;
+
+    const handleScroll = () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          // If near top of page (hero area)
+          if (window.scrollY < 220) {
+            setActiveSection("home");
+            ticking = false;
+            return;
+          }
+
+          // If scrolled near bottom of page (pricing/footer)
+          if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 150) {
+            setActiveSection("pricing");
+            ticking = false;
+            return;
+          }
+
+          const scrollPosition = window.scrollY + 140;
+          for (const id of sectionIds) {
+            const el = document.getElementById(id);
+            if (el) {
+              const top = el.offsetTop;
+              const height = el.offsetHeight;
+              if (scrollPosition >= top && scrollPosition < top + height) {
+                setActiveSection(id);
+                break;
+              }
+            }
+          }
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("hashchange", handleHashChange);
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, []);
+
+  function handleNavClick(e: React.MouseEvent<HTMLAnchorElement>, id: string) {
+    e.preventDefault();
+    setActiveSection(id);
+    setMobileMenuOpen(false);
+
+    if (id === "home") {
+      window.history.pushState(null, "", window.location.pathname);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      window.history.pushState(null, "", `#${id}`);
+      const el = document.getElementById(id);
+      if (el) {
+        const headerOffset = 85;
+        const elementPosition = el.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+      }
+    }
+  }
+
+  const NAV_ITEMS = [
+    { id: "home", label: "Home", href: "/" },
+    { id: "features", label: "Features", href: "#features" },
+    { id: "retailers", label: "For Retailers", href: "#retailers" },
+    { id: "consumers", label: "For Consumers", href: "#consumers" },
+    { id: "products", label: "Products", href: "#products" },
+    { id: "pricing", label: "Pricing", href: "#pricing" },
+  ];
+
   const overchargeDiff = Math.max(0, Number(chargedInput || 0) - Number(mrpInput || 0));
 
   return (
@@ -170,25 +281,26 @@ function HomePage() {
           <VerigroLogo variant="default" size="md" to="/" />
 
           {/* Center Navigation Links */}
-          <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600">
-            <Link to="/" className="text-blue-600 font-semibold transition-colors">
-              Home
-            </Link>
-            <a href="#features" className="hover:text-slate-900 transition-colors">
-              Features
-            </a>
-            <a href="#retailers" className="hover:text-slate-900 transition-colors">
-              For Retailers
-            </a>
-            <a href="#consumers" className="hover:text-slate-900 transition-colors">
-              For Consumers
-            </a>
-            <a href="#products" className="hover:text-slate-900 transition-colors">
-              Products
-            </a>
-            <a href="#pricing" className="hover:text-slate-900 transition-colors">
-              Pricing
-            </a>
+          <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
+            {NAV_ITEMS.map((item) => {
+              const isActive = activeSection === item.id;
+              return (
+                <a
+                  key={item.id}
+                  href={item.href}
+                  onClick={(e) => handleNavClick(e, item.id)}
+                  className={`transition-colors ${
+                    isActive
+                      ? "text-blue-600 font-semibold"
+                      : "text-slate-600 hover:text-slate-900 font-medium"
+                  }`}
+                  data-status={isActive ? "active" : undefined}
+                  aria-current={isActive ? "page" : undefined}
+                >
+                  {item.label}
+                </a>
+              );
+            })}
           </nav>
 
           {/* Right Header Actions */}
@@ -228,12 +340,47 @@ function HomePage() {
                 </Link>
               </div>
             )}
+
+            {/* Mobile Menu Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+              className="md:hidden p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors focus:outline-none"
+              aria-label="Toggle navigation menu"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
           </div>
         </div>
+
+        {/* Mobile Dropdown Menu */}
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-slate-200 bg-white/98 backdrop-blur-md px-4 py-3 space-y-1 shadow-lg animate-in slide-in-from-top-2 duration-200">
+            {NAV_ITEMS.map((item) => {
+              const isActive = activeSection === item.id;
+              return (
+                <a
+                  key={item.id}
+                  href={item.href}
+                  onClick={(e) => handleNavClick(e, item.id)}
+                  className={`block px-3 py-2 rounded-lg text-sm transition-colors ${
+                    isActive
+                      ? "text-blue-600 font-semibold bg-blue-50"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium"
+                  }`}
+                  data-status={isActive ? "active" : undefined}
+                  aria-current={isActive ? "page" : undefined}
+                >
+                  {item.label}
+                </a>
+              );
+            })}
+          </div>
+        )}
       </header>
 
       {/* 2. Hero Section Matching media_1789210388672.jpg */}
-      <section className="relative pt-12 pb-20 sm:pt-16 sm:pb-28 overflow-hidden bg-gradient-to-b from-slate-50/70 via-white to-white border-b border-slate-100">
+      <section id="home" className="relative pt-12 pb-20 sm:pt-16 sm:pb-28 overflow-hidden bg-gradient-to-b from-slate-50/70 via-white to-white border-b border-slate-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center max-w-3xl mx-auto space-y-6">
             {/* Top Badge */}
@@ -710,7 +857,7 @@ function HomePage() {
       </section>
 
       {/* 6. Over-MRP & Legal Metrology Rule 6 Calculator */}
-      <section className="py-16 sm:py-20 bg-white">
+      <section id="consumers" className="py-16 sm:py-20 bg-white">
         <div className="max-w-4xl mx-auto px-4 sm:px-6">
           <div className="p-8 rounded-3xl border border-slate-200 bg-gradient-to-br from-blue-50/50 via-white to-slate-50 shadow-sm space-y-6">
             <div className="flex items-center gap-3">

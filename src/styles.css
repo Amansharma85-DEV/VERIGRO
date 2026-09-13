@@ -55,6 +55,10 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 :root {
   --radius: 0.75rem;
   /* Clean White SaaS Theme for VERIGRO */
