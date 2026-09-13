@@ -37,7 +37,7 @@ function NotFoundComponent() {
 }
 
 function ErrorComponent({ error, reset }: { error: any; reset: () => void }) {
-  console.error(error);
+  console.error("VERIGRO Root Error:", error);
   const router = useRouter();
   useEffect(() => {
     reportLovableError(error, { boundary: "tanstack_root_error_component" });
@@ -52,6 +52,11 @@ function ErrorComponent({ error, reset }: { error: any; reset: () => void }) {
         <p className="mt-2 text-sm text-muted-foreground">
           Kuch gadbad ho gayi. Refresh karein ya home par jaayein.
         </p>
+        {error?.message && (
+          <p className="mt-3 p-2 text-xs font-mono text-red-600 bg-red-50 rounded border border-red-100 text-left overflow-auto max-h-24">
+            {String(error.message)}
+          </p>
+        )}
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
             onClick={() => {
@@ -131,16 +136,22 @@ function RootComponent() {
 
   useEffect(() => {
     // Register PWA service worker where supported
-    if (typeof window !== "undefined" && "serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+    if (typeof window !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
 
-    const { data } = supabase.auth.onAuthStateChange((event) => {
-      if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") return;
-      router.invalidate();
-      if (event !== "SIGNED_OUT") queryClient.invalidateQueries();
-    });
-    return () => data.subscription.unsubscribe();
+    try {
+      const { data } = supabase.auth.onAuthStateChange((event) => {
+        if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") return;
+        router.invalidate();
+        if (event !== "SIGNED_OUT") queryClient.invalidateQueries();
+      });
+      return () => {
+        data?.subscription?.unsubscribe?.();
+      };
+    } catch (err) {
+      console.warn("Supabase auth listener initialization skipped:", err);
+    }
   }, [queryClient, router]);
 
   return (

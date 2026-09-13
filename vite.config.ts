@@ -9,6 +9,9 @@ import viteTsConfigPaths from "vite-tsconfig-paths";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  define: {
+    "process.env": {},
+  },
   server: {
     host: "0.0.0.0",
     port: 3000,

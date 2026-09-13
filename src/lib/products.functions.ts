@@ -5,9 +5,11 @@ import type { Database } from "@/integrations/supabase/types";
 import type { LookupResult, ProductInfo } from "./product-types";
 
 function publicClient() {
+  const url = process.env["SUPABASE_URL"] || "https://your-project-id.supabase.co";
+  const key = process.env["SUPABASE_PUBLISHABLE_KEY"] || "your-supabase-publishable-key";
   return createClient<Database>(
-    process.env["SUPABASE_URL"]!,
-    process.env["SUPABASE_PUBLISHABLE_KEY"]!,
+    url,
+    key,
     { auth: { storage: undefined, persistSession: false, autoRefreshToken: false } },
   );
 }

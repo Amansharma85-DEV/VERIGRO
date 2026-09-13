@@ -91,24 +91,52 @@ function HomePage() {
 
   useEffect(() => {
     runList()
-      .then((res) => setProducts(res.products))
-      .catch(() => setProducts([]));
+      .then((res) => {
+        if (res?.products) setProducts(res.products);
+      })
+      .catch((err) => {
+        console.warn("runList fetch fallback:", err);
+        setProducts([]);
+      });
 
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user?.email) {
-        setUserEmail(data.user.email);
-      } else if (typeof window !== "undefined") {
-        const saved = localStorage.getItem("verigro_demo_user") || localStorage.getItem("nirikshan_demo_user");
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            setUserEmail(parsed.email || parsed.name || null);
-          } catch (error) {
-            console.error(error);
+    try {
+      supabase.auth
+        .getUser()
+        .then(({ data }) => {
+          if (data?.user?.email) {
+            setUserEmail(data.user.email);
+          } else if (typeof window !== "undefined") {
+            const saved =
+              localStorage.getItem("verigro_demo_user") ||
+              localStorage.getItem("nirikshan_demo_user") ||
+              localStorage.getItem("verigro_session");
+            if (saved) {
+              try {
+                const parsed = JSON.parse(saved);
+                setUserEmail(parsed.email || parsed.user?.email || parsed.name || null);
+              } catch (error) {
+                console.error(error);
+              }
+            }
           }
-        }
-      }
-    });
+        })
+        .catch(() => {
+          if (typeof window !== "undefined") {
+            const saved =
+              localStorage.getItem("verigro_demo_user") ||
+              localStorage.getItem("nirikshan_demo_user") ||
+              localStorage.getItem("verigro_session");
+            if (saved) {
+              try {
+                const parsed = JSON.parse(saved);
+                setUserEmail(parsed.email || parsed.user?.email || parsed.name || null);
+              } catch {}
+            }
+          }
+        });
+    } catch {
+      // safe fallback
+    }
   }, [runList]);
 
   async function handleSearch(e: React.FormEvent) {
