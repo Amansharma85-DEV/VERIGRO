@@ -1,11 +1,11 @@
-# AGENTS.md — Development Guidelines for NIRIKSHAN
+# AGENTS.md — Development Guidelines for VERIGRO
 
-Welcome to the **NIRIKSHAN** codebase. This guide is intended for AI agents and human developers collaborating on this project.
+Welcome to the **VERIGRO** codebase. This guide is intended for AI agents and human developers collaborating on this project.
 
 ## 1. Project Overview
-- **Name:** NIRIKSHAN (निरीक्षण)
-- **Tagline:** Daily Indian Product Intelligence & Scanner
-- **Core Concept:** Scan barcode or upload product packaging images to instantly analyze ingredients, nutritional facts, health scores, eco-ratings, allergens, and healthier alternatives tailored for Indian consumers.
+- **Name:** VERIGRO
+- **Tagline:** Verify Products. Manage Stores. Shop Smarter.
+- **Core Concept:** Scan barcode or upload product packaging images to instantly analyze ingredients, nutritional facts, health scores, eco-ratings, allergens, and healthier alternatives tailored for Indian consumers and retail stores.
 - **Languages:** Dual Hindi & English UI copywriting.
 
 ## 2. Tech Stack & Architecture

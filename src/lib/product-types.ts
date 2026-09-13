@@ -26,6 +26,15 @@ export type ProductInfo = {
   legalMetrologyRules?: string | null;
   healthRiskAlerts?: string[] | null;
   fssaiVerifiedFormat?: boolean | null;
+  fssaiLicNo?: string | null;
+  manufacturer?: string | null;
+  batchNumber?: string | null;
+  mfgDate?: string | null;
+  expiryDate?: string | null;
+  stockQuantity?: number | null;
+  imageUrl?: string | null;
+  expiryStatus?: "Safe" | "Expiring Soon" | "Expired" | string | null;
+  daysRemaining?: number | null;
   microplasticRisk?: "Low" | "Medium" | "High" | null;
   recyclingBin?: "Dry Waste (Blue)" | "Wet Waste (Green)" | "E-Waste" | null;
   source: "catalog" | "openfoodfacts" | "ai" | "image_analysis";

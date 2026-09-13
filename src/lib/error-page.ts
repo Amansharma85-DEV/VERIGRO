@@ -4,7 +4,7 @@ export function renderErrorPage(): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Server Error — NIRIKSHAN</title>
+  <title>Server Error — VERIGRO</title>
   <style>
     :root {
       color-scheme: dark;

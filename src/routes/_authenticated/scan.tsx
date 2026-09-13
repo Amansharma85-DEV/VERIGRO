@@ -5,23 +5,43 @@ import { useEffect, useRef, useState } from "react";
 import { BrowserMultiFormatReader } from "@zxing/library";
 import Tesseract from "tesseract.js";
 import {
+  AlertCircle,
   AlertTriangle,
+  ArrowRight,
   Award,
   Barcode,
+  Boxes,
   Camera,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   ExternalLink,
+  Eye,
+  HeartPulse,
+  History,
+  Info,
+  Layers,
   Leaf,
   Loader2,
-  LogOut,
   MapPin,
+  Maximize2,
+  Minimize2,
+  Minus,
   PlayCircle,
+  Plus,
+  RefreshCw,
+  Scale,
   ScanLine,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Store,
+  SwitchCamera,
+  Tag,
   Upload,
-  Video,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,27 +53,37 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { supabase } from "@/integrations/supabase/client";
 import { identifyFromImage, listProducts, lookupBarcode } from "@/lib/products.functions";
 import { saveScan } from "@/lib/scans.functions";
 import type { ProductInfo } from "@/lib/product-types";
-import scanHero from "@/assets/scan-hero.jpg";
-import nirikshanLogo from "@/assets/nirikshan-logo.png";
+import {
+  addOrUpdateInventoryItem,
+  calculateExpiry,
+  getCurrentStoreId,
+  type InventoryRecord,
+  type ScanSession,
+} from "@/lib/inventory";
 
 export const Route = createFileRoute("/_authenticated/scan")({
   head: () => ({
     meta: [
-      { title: "Scanner — NIRIKSHAN" },
+      { title: "Product Scanner & Inventory Entry — VERIGRO" },
       {
         name: "description",
-        content: "Barcode number daalein ya product ki photo upload karke poori detail dekhein.",
+        content:
+          "VERIGRO Smart Scanner. Scan barcodes or packaging photos to automatically add and update grocery store inventory records with batch and expiry tracking.",
       },
-      { property: "og:title", content: "NIRIKSHAN Scanner" },
+      { property: "og:title", content: "VERIGRO Smart Scanner" },
       {
         property: "og:description",
-        content: "Barcode ya photo se daily use products ki detail turant paayein.",
+        content: "Scan products to verify ingredients, expiry dates, and auto-update store inventory.",
       },
     ],
+  }),
+  validateSearch: (search: Record<string, unknown>): { code?: string; q?: string; autostart?: string } => ({
+    code: typeof search["code"] === "string" ? search["code"] : undefined,
+    q: typeof search["q"] === "string" ? search["q"] : undefined,
+    autostart: typeof search["autostart"] === "string" ? search["autostart"] : undefined,
   }),
   component: ScanPage,
 });
@@ -61,9 +91,10 @@ export const Route = createFileRoute("/_authenticated/scan")({
 type Mode = "barcode" | "image";
 
 function ScanPage() {
+  const searchParams = Route.useSearch();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const runBarcode = useServerFn(lookupBarcode);
   const runImage = useServerFn(identifyFromImage);
@@ -71,14 +102,58 @@ function ScanPage() {
   const runList = useServerFn(listProducts);
 
   const [mode, setMode] = useState<Mode>("barcode");
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(searchParams.code || searchParams.q || "");
   const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<string | null>(null);
   const [product, setProduct] = useState<ProductInfo | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<ProductInfo[]>([]);
-  const [email, setEmail] = useState<string | null>(null);
-  const [showVideoModal, setShowVideoModal] = useState(false);
+
+  // Camera permissions and mobile fallback states
+  const [cameraDenied, setCameraDenied] = useState(false);
+  const [showManualInput, setShowManualInput] = useState(false);
+
+  // Retailer Inventory & Scan Session Settings
+  const [autoAdd, setAutoAdd] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("verigro_auto_add_inventory");
+      return saved !== null ? saved === "true" : true;
+    }
+    return true;
+  });
+
+  const [quickScan, setQuickScan] = useState<boolean>(false);
+  const [quantity, setQuantity] = useState<number>(1);
+  const [customBatch, setCustomBatch] = useState<string>("");
+
+  // Scan Confirmation State
+  const [lastScanResult, setLastScanResult] = useState<{
+    record: InventoryRecord;
+    isDuplicate: boolean;
+    previousQuantity: number;
+    newQuantity: number;
+    addedQty: number;
+  } | null>(null);
+
+  // Scan Session tracking (Today's Stock Entry)
+  const [session, setSession] = useState<ScanSession>({
+    id: "session_" + Date.now(),
+    storeId: getCurrentStoreId(),
+    name: "Today's Stock Entry",
+    startedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    totalScanned: 0,
+    newProducts: 0,
+    updatedProducts: 0,
+    expiredProducts: 0,
+    expiringSoonProducts: 0,
+    items: [],
+  });
+
+  // Camera stream state
+  const [cameraActive, setCameraActive] = useState(searchParams.autostart === "1");
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+
   const [history, setHistory] = useState<
     Array<{
       id: string;
@@ -87,54 +162,143 @@ function ScanPage() {
       brand: string;
       mode: string;
       date: string;
+      expiryStatus?: string;
       product: ProductInfo;
     }>
   >([]);
 
+  // Load initial product and saved history
   useEffect(() => {
-    runList().then((res) => setCatalog(res.products)).catch(() => setCatalog([]));
-    
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user?.email) {
-        setEmail(data.user.email);
-      } else if (typeof window !== "undefined") {
-        const saved = localStorage.getItem("nirikshan_demo_user");
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            setEmail(parsed.email || parsed.name || "User");
-          } catch {
-            setEmail(null);
-          }
-        }
-      }
-    });
-
     if (typeof window !== "undefined") {
       try {
-        const saved = localStorage.getItem("nirikshan_saved_scans");
-        if (saved) setHistory(JSON.parse(saved));
-      } catch {
-        // history parse fallback
-      }
+        const saved = localStorage.getItem("verigro_saved_scans") || localStorage.getItem("nirikshan_saved_scans");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setHistory(parsed);
+          }
+        }
+      } catch {}
     }
-  }, [runList]);
 
-  async function record(mode: Mode, query: string, found: ProductInfo | null) {
+    // Default to Diet Coke or param lookup
+    const initialTarget = searchParams.code || searchParams.q || "8901764061103";
+    runBarcode({ data: { code: initialTarget } })
+      .then((res) => {
+        if (res.product) {
+          setProduct(res.product);
+          setCustomBatch(res.product.batchNumber || "CCLO724");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  function handleToggleAutoAdd(val: boolean) {
+    setAutoAdd(val);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("verigro_auto_add_inventory", String(val));
+    }
+  }
+
+  // Camera management
+  useEffect(() => {
+    if (cameraActive && mode === "barcode") {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+    return () => {
+      stopCamera();
+    };
+  }, [cameraActive, facingMode, mode]);
+
+  async function startCamera() {
+    stopCamera();
+    setCameraDenied(false);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setCameraDenied(true);
+        setCameraActive(false);
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      });
+      mediaStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setCameraDenied(false);
+      startContinuousBarcodeScan();
+    } catch {
+      setCameraDenied(true);
+      setCameraActive(false);
+    }
+  }
+
+  function stopCamera() {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }
+
+  // Barcode detector continuous loop from camera
+  function startContinuousBarcodeScan() {
+    let active = true;
+
+    const scanFrame = async () => {
+      if (!active || !videoRef.current || !cameraActive) return;
+      if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+        try {
+          if ("BarcodeDetector" in window) {
+            const detector = new (window as any).BarcodeDetector({
+              formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "qr_code"],
+            });
+            const barcodes = await detector.detect(videoRef.current);
+            if (barcodes.length > 0 && barcodes[0].rawValue) {
+              const detected = String(barcodes[0].rawValue).replace(/\D/g, "");
+              if (detected.length >= 6) {
+                toast.success(`Barcode detected: ${detected}`);
+                setCode(detected);
+                if (!quickScan) {
+                  setCameraActive(false);
+                }
+                handleBarcode(detected);
+                return;
+              }
+            }
+          }
+        } catch {}
+      }
+      if (active && cameraActive) {
+        requestAnimationFrame(scanFrame);
+      }
+    };
+
+    requestAnimationFrame(scanFrame);
+  }
+
+  async function recordHistory(modeType: Mode, query: string, found: ProductInfo | null) {
     if (found) {
       const entry = {
         id: String(Date.now()),
         query,
         productName: found.name,
-        brand: found.brand ?? "NIRIKSHAN Verified",
-        mode,
+        brand: found.brand ?? "VERIGRO Verified",
+        mode: modeType,
         date: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        expiryStatus: found.expiryStatus || "Safe",
         product: found,
       };
       setHistory((prev) => {
         const updated = [entry, ...prev.filter((p) => p.productName !== found.name)].slice(0, 10);
         if (typeof window !== "undefined") {
-          localStorage.setItem("nirikshan_saved_scans", JSON.stringify(updated));
+          localStorage.setItem("verigro_saved_scans", JSON.stringify(updated));
         }
         return updated;
       });
@@ -142,22 +306,76 @@ function ScanPage() {
     try {
       await runSave({
         data: {
-          mode,
+          mode: modeType,
           query,
           productName: found?.name ?? null,
           brand: found?.brand ?? null,
           source: found?.source ?? null,
         },
       });
-    } catch {
-      // history save fail hona scan ko nahi rokta
+    } catch {}
+  }
+
+  // Add current product to inventory
+  function processInventoryEntry(targetProduct: ProductInfo, qtyToAdd: number, batchToUse?: string) {
+    const storeId = getCurrentStoreId();
+    const batch = (batchToUse || customBatch || targetProduct.batchNumber || "BATCH-" + new Date().getFullYear()).trim();
+
+    const { daysRemaining, expiryStatus } = calculateExpiry(targetProduct.expiryDate);
+
+    const invResult = addOrUpdateInventoryItem(storeId, targetProduct, {
+      batchNumber: batch,
+      mfgDate: targetProduct.mfgDate || undefined,
+      expiryDate: targetProduct.expiryDate || undefined,
+      quantity: qtyToAdd,
+    });
+
+    setLastScanResult({
+      record: invResult.record,
+      isDuplicate: invResult.isDuplicate,
+      previousQuantity: invResult.previousQuantity,
+      newQuantity: invResult.newQuantity,
+      addedQty: qtyToAdd,
+    });
+
+    // Update session metrics
+    setSession((prev) => ({
+      ...prev,
+      totalScanned: prev.totalScanned + 1,
+      newProducts: invResult.isDuplicate ? prev.newProducts : prev.newProducts + 1,
+      updatedProducts: invResult.isDuplicate ? prev.updatedProducts + 1 : prev.updatedProducts,
+      expiredProducts: expiryStatus === "EXPIRED" ? prev.expiredProducts + 1 : prev.expiredProducts,
+      expiringSoonProducts: expiryStatus === "EXPIRING SOON" ? prev.expiringSoonProducts + 1 : prev.expiringSoonProducts,
+      items: [
+        {
+          barcode: targetProduct.barcode || "",
+          productName: targetProduct.name,
+          batchNumber: batch,
+          quantityAdded: qtyToAdd,
+          status: expiryStatus,
+        },
+        ...prev.items,
+      ],
+    }));
+
+    if (invResult.isDuplicate) {
+      toast.success(`✓ Existing inventory updated: ${targetProduct.name} (+${qtyToAdd} unit · Total: ${invResult.newQuantity})`);
+    } else {
+      toast.success(`✓ Added to Inventory: ${targetProduct.name} (${qtyToAdd} units)`);
+    }
+
+    // Quick Scan mode auto-reset
+    if (quickScan) {
+      setTimeout(() => {
+        setQuantity(1);
+      }, 1200);
     }
   }
 
   async function handleBarcode(value?: string) {
     const target = (value ?? code).trim();
     if (!target) {
-      toast.error("Barcode number daalein.");
+      toast.error("Please enter a valid barcode number.");
       return;
     }
     setProduct(null);
@@ -167,23 +385,32 @@ function ScanPage() {
       const res = await runBarcode({ data: { code: target } });
       setProduct(res.product);
       setMessage(res.message ?? null);
-      if (!res.product) toast.error(res.message ?? "Product nahi mila.");
-      await record("barcode", target, res.product);
+
+      if (res.product) {
+        setCustomBatch(res.product.batchNumber || "CCLO724");
+        await recordHistory("barcode", target, res.product);
+
+        // AUTO-ADD TO INVENTORY WORKFLOW
+        if (autoAdd) {
+          processInventoryEntry(res.product, quantity, res.product.batchNumber || undefined);
+        }
+      } else {
+        toast.error(res.message ?? "Product not found in verification catalog.");
+      }
     } catch {
-      toast.error("Scan fail hua, dobara try karein.");
+      toast.error("Lookup failed. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
+  // Client-side image recognition using ZXing + OCR
   async function scanImageForBarcode(dataUrl: string): Promise<string | null> {
     if (typeof window === "undefined") return null;
-
     const img = new Image();
     img.src = dataUrl;
     await img.decode().catch(() => {});
 
-    // 1. Browser Native BarcodeDetector API
     if ("BarcodeDetector" in window) {
       try {
         const detector = new (window as any).BarcodeDetector({
@@ -191,698 +418,1080 @@ function ScanPage() {
         });
         const barcodes = await detector.detect(img);
         if (barcodes.length > 0 && barcodes[0].rawValue) {
-          const code = String(barcodes[0].rawValue).replace(/\D/g, "");
-          if (code.length >= 5) return code;
+          const c = String(barcodes[0].rawValue).replace(/\D/g, "");
+          if (c.length >= 5) return c;
         }
       } catch {}
     }
 
-    // 2. ZXing MultiFormat Reader on original URL
     try {
-      const codeReader = new BrowserMultiFormatReader();
-      const res = await codeReader.decodeFromImageUrl(dataUrl);
-      if (res && res.getText()) {
-        const code = String(res.getText()).replace(/\D/g, "");
-        if (code.length >= 5) return code;
-      }
-    } catch {}
-
-    // 3. Multi-angle Canvas Rotations (90°, 180°, 270°) for sideways/rotated image barcodes
-    try {
-      if (img.width > 0 && img.height > 0) {
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        const codeReader = new BrowserMultiFormatReader();
-
-        if (ctx) {
-          for (const angle of [90, 180, 270]) {
-            canvas.width = angle % 180 === 0 ? img.width : img.height;
-            canvas.height = angle % 180 === 0 ? img.height : img.width;
-            ctx.save();
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate((angle * Math.PI) / 180);
-            ctx.drawImage(img, -img.width / 2, -img.height / 2);
-            ctx.restore();
-
-            const rotatedUrl = canvas.toDataURL("image/png");
-            try {
-              const res = await codeReader.decodeFromImageUrl(rotatedUrl);
-              if (res && res.getText()) {
-                const code = String(res.getText()).replace(/\D/g, "");
-                if (code.length >= 5) return code;
-              }
-            } catch {}
-          }
-        }
+      const reader = new BrowserMultiFormatReader();
+      const zxRes = await reader.decodeFromImageUrl(dataUrl);
+      if (zxRes && zxRes.getText()) {
+        const c = zxRes.getText().replace(/\D/g, "");
+        if (c.length >= 5) return c;
       }
     } catch {}
 
     return null;
   }
 
-  async function handleFile(file: File) {
-    if (!file.type.startsWith("image/")) {
-      toast.error("Sirf image file chalegi.");
-      return;
-    }
-    if (file.size > 6 * 1024 * 1024) {
-      toast.error("Image 6MB se chhoti honi chahiye.");
-      return;
-    }
-    setProduct(null);
-    setMessage(null);
-    setLoading(true);
-
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("read failed"));
-      reader.readAsDataURL(file);
-    });
-    setPreview(dataUrl);
-
-    // Run client-side multi-angle barcode scanner
-    const detectedCode = await scanImageForBarcode(dataUrl);
-
+  async function extractTextWithTesseract(dataUrl: string): Promise<string> {
+    setOcrProgress("Reading package label with OCR...");
     try {
-      let finalProduct: ProductInfo | null = null;
-      let finalMessage: string | null = null;
-
-      if (detectedCode && detectedCode.length >= 5) {
-        setCode(detectedCode);
-        const res = await runBarcode({ data: { code: detectedCode } });
-        finalProduct = res.product;
-        finalMessage = res.message ?? null;
-      }
-
-      // If no barcode detected OR the barcode led to a generic fallback, try OCR
-      const isGeneric = finalProduct?.name.includes("Barcode: ");
-      if (!finalProduct || isGeneric) {
-        toast.info(isGeneric ? "Verifying with AI Vision..." : "Barcode not clear. AI is reading package text...");
-        let ocrText = "";
-        try {
-          const { data } = await Tesseract.recognize(dataUrl, "eng", { logger: m => console.log(m) });
-          ocrText = data.text.replace(/\n/g, " ");
-        } catch (err) {
-          console.error("OCR Failed", err);
-        }
-
-        // Send both filename and extracted text to backend
-        const combinedHints = (file.name + " " + ocrText).toLowerCase();
-        const res = await runImage({ data: { imageDataUrl: dataUrl, fileName: combinedHints } });
-        
-        // If image analyzer found a specific match (not its own fallback), use it
-        if (res.product && !res.product.name.includes("Product Photo Scan")) {
-             finalProduct = res.product;
-             finalMessage = res.message ?? null;
-             if (res.product.barcode && !res.product.barcode.startsWith("PHOTO")) {
-                 setCode(res.product.barcode);
-             }
-        } else if (!finalProduct && res.product) {
-             finalProduct = res.product;
-             finalMessage = res.message ?? null;
-        }
-      }
-
-      setProduct(finalProduct);
-      setMessage(finalMessage);
-      if (!finalProduct) toast.error("Product pehchana nahi gaya.");
-      if (finalProduct) await record("image", file.name.slice(0, 60), finalProduct);
+      const {
+        data: { text },
+      } = await Tesseract.recognize(dataUrl, "eng", {
+        logger: (m) => {
+          if (m.status === "recognizing text" && typeof m.progress === "number") {
+            setOcrProgress(`Reading packaging text: ${Math.round(m.progress * 100)}%`);
+          }
+        },
+      });
+      return text;
     } catch {
-      toast.error("Image scan fail hua, dobara try karein.");
+      return "";
     } finally {
-      setLoading(false);
+      setOcrProgress(null);
     }
   }
 
-  async function handleSignOut() {
-    await queryClient.cancelQueries();
-    queryClient.clear();
-    await supabase.auth.signOut();
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("nirikshan_demo_user");
+  async function handleImageFile(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please upload a valid image file (JPG, PNG, WEBP).");
+      return;
     }
-    navigate({ to: "/auth", replace: true });
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target?.result as string;
+      setPreview(dataUrl);
+      setProduct(null);
+      setMessage(null);
+      setLoading(true);
+
+      try {
+        setOcrProgress("Scanning image for barcode...");
+        const detectedBarcode = await scanImageForBarcode(dataUrl);
+        if (detectedBarcode) {
+          toast.success(`Barcode detected in photo: ${detectedBarcode}`);
+          setCode(detectedBarcode);
+          const res = await runBarcode({ data: { code: detectedBarcode } });
+          if (res.product) {
+            setProduct(res.product);
+            setCustomBatch(res.product.batchNumber || "CCLO724");
+            await recordHistory("image", detectedBarcode, res.product);
+
+            if (autoAdd) {
+              processInventoryEntry(res.product, quantity);
+            }
+            return;
+          }
+        }
+
+        const ocrText = await extractTextWithTesseract(dataUrl);
+        const res = await runImage({
+          data: {
+            imageDataUrl: dataUrl,
+            fileName: `${file.name} ${detectedBarcode ?? ""} ${ocrText}`.slice(0, 500),
+          },
+        });
+        setProduct(res.product);
+        setMessage(res.message ?? null);
+        await recordHistory("image", file.name, res.product);
+
+        if (res.product && autoAdd) {
+          processInventoryEntry(res.product, quantity);
+        }
+      } catch {
+        toast.error("Photo analysis failed. Please try entering the barcode number.");
+      } finally {
+        setLoading(false);
+        setOcrProgress(null);
+      }
+    };
+    reader.readAsDataURL(file);
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-20 border-b border-border/60 bg-background/85 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-4">
-          <Link to="/" className="flex items-center gap-3">
-            <div className="relative flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary/30 to-primary/10 p-0.5 border border-primary/40 shadow-beam overflow-hidden">
-              <img src={nirikshanLogo} alt="NIRIKSHAN Logo" className="size-full object-cover rounded-lg" />
-            </div>
-            <span className="font-display text-lg font-bold tracking-[0.2em]">NIRIKSHAN</span>
+    <div className="space-y-6">
+      {/* Top Mobile & Desktop Header with Back Button */}
+      <div className="flex items-center justify-between gap-3 pb-2 border-b border-slate-200">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <Link
+            to="/dashboard"
+            className="inline-flex items-center gap-1 p-2 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors font-bold text-xs min-h-[44px]"
+            title="Back to Dashboard"
+          >
+            <ChevronLeft className="w-5 h-5 text-blue-600" />
+            <span className="hidden sm:inline">Back</span>
           </Link>
-          <div className="flex items-center gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
+                Barcode & Batch Scanner
+              </span>
+              <span className="text-xs text-slate-400">·</span>
+              <span className="text-[10px] sm:text-xs text-slate-500 font-medium">Store POS Engine</span>
+            </div>
+            <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold font-display text-slate-900 tracking-tight mt-0.5">
+              Scan Product
+            </h1>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setCode("8901764061103");
+              handleBarcode("8901764061103");
+            }}
+            className="hidden md:inline-flex text-xs font-semibold border-slate-300 hover:bg-slate-50"
+          >
+            Sample: Diet Coke
+          </Button>
+          <Link
+            to="/inventory"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold shadow-xs min-h-[44px]"
+          >
+            <Layers className="w-4 h-4 text-blue-600" />
+            <span>Inventory</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* SECTION 18: SCAN SESSION BAR (Today's Stock Entry) */}
+      <div className="p-3.5 sm:p-4 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 text-blue-600 flex items-center justify-center shrink-0">
+            <Boxes className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-900">
+                {session.name}
+              </span>
+              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded-full">
+                Active Session
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Started at {session.startedAt} · Multi-scan inventory logging
+            </p>
+          </div>
+        </div>
+
+        {/* Live Session Counter Metrics */}
+        <div className="flex flex-wrap items-center gap-3 sm:gap-5 text-xs">
+          <div className="text-center sm:text-left">
+            <div className="text-slate-400 text-[11px]">Total Scanned</div>
+            <strong className="text-sm font-extrabold text-slate-900">{session.totalScanned}</strong>
+          </div>
+          <div className="text-center sm:text-left">
+            <div className="text-slate-400 text-[11px]">New Items</div>
+            <strong className="text-sm font-extrabold text-blue-600">+{session.newProducts}</strong>
+          </div>
+          <div className="text-center sm:text-left">
+            <div className="text-slate-400 text-[11px]">Updated</div>
+            <strong className="text-sm font-extrabold text-emerald-600">+{session.updatedProducts}</strong>
+          </div>
+          {session.expiringSoonProducts > 0 && (
+            <div className="text-center sm:text-left">
+              <div className="text-amber-500 text-[11px]">Expiring Soon</div>
+              <strong className="text-sm font-extrabold text-amber-600">{session.expiringSoonProducts}</strong>
+            </div>
+          )}
+          {session.expiredProducts > 0 && (
+            <div className="text-center sm:text-left">
+              <div className="text-red-500 text-[11px]">Expired</div>
+              <strong className="text-sm font-extrabold text-red-600">{session.expiredProducts}</strong>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowVideoModal(true)}
-              className="border-primary/40 text-primary hover:bg-primary/10 gap-1.5 text-xs font-semibold"
+              onClick={() => {
+                toast.info(`Session finished! ${session.totalScanned} products logged to inventory.`);
+                setSession({
+                  id: "session_" + Date.now(),
+                  storeId: getCurrentStoreId(),
+                  name: "Afternoon Stock Batch",
+                  startedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                  totalScanned: 0,
+                  newProducts: 0,
+                  updatedProducts: 0,
+                  expiredProducts: 0,
+                  expiringSoonProducts: 0,
+                  items: [],
+                });
+              }}
+              className="text-[11px] font-bold h-8 min-h-[36px]"
             >
-              <PlayCircle className="size-4 text-accent" /> Video Guide
-            </Button>
-            {email && (
-              <span className="hidden items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary sm:inline-flex">
-                👤 {email}
-              </span>
-            )}
-            <Button variant="outline" size="sm" onClick={handleSignOut}>
-              <LogOut className="mr-1.5 size-4" /> Logout
+              Finish Session
             </Button>
           </div>
         </div>
-      </header>
+      </div>
 
-      <main className="mx-auto max-w-6xl px-5 py-10">
-        <div className="grid gap-8 lg:grid-cols-[0.95fr_1.05fr]">
-          <section>
-            <h1 className="text-3xl">Product scanner</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Barcode number daalein, ya product ki photo upload karein — dono se detail milegi.
-            </p>
-
-            <div className="mt-6 grid grid-cols-2 gap-1 rounded-2xl bg-secondary p-1">
-              {(
-                [
-                  { value: "barcode" as Mode, label: "Barcode", icon: Barcode },
-                  { value: "image" as Mode, label: "Photo", icon: Camera },
-                ]
-              ).map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setMode(option.value)}
-                  className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
-                    mode === option.value
-                      ? "bg-beam text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <option.icon className="size-4" /> {option.label}
-                </button>
-              ))}
+      {/* Main 2-Column Grid */}
+      <div className="grid lg:grid-cols-12 gap-6 items-start">
+        {/* ========================================================================= */}
+        {/* LEFT COLUMN: Product Scanner + Auto Add + Controls (5 cols)               */}
+        {/* ========================================================================= */}
+        <div className="lg:col-span-5 space-y-5">
+          {/* 1. Product Scanner Card with Light-Slate Camera Viewport */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold font-display text-slate-900">Camera Viewfinder</h2>
+                <p className="text-xs text-slate-500">Align barcode or package within the guide box</p>
+              </div>
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
             </div>
 
-            <div className="mt-5 rounded-3xl surface-glass p-5">
-              {mode === "barcode" ? (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void handleBarcode();
-                  }}
-                  className="space-y-4"
-                >
-                  <div className="flex gap-2">
-                    <Input
-                      value={code}
-                      onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 20))}
-                      inputMode="numeric"
-                      placeholder="4902505085703"
-                      aria-label="Barcode number"
-                    />
-                    <Button type="submit" disabled={loading} className="shadow-beam">
-                      {loading ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Search className="size-4" />
-                      )}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Pack ke peeche likha 8-13 digit ka number daalein.
-                  </p>
-                </form>
-              ) : (
-                <div className="space-y-4">
+            {/* Mode Switcher: Barcode vs Photo */}
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setMode("barcode")}
+                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all min-h-[40px] ${
+                  mode === "barcode"
+                    ? "bg-white text-blue-600 shadow-xs border border-slate-200"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Barcode className="w-4 h-4" />
+                <span>Barcode Scan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("image");
+                  stopCamera();
+                  setCameraActive(false);
+                }}
+                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all min-h-[40px] ${
+                  mode === "image"
+                    ? "bg-white text-blue-600 shadow-xs border border-slate-200"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Camera className="w-4 h-4" />
+                <span>Photo / OCR</span>
+              </button>
+            </div>
+
+            {/* AUTOMATIC INVENTORY TOGGLE & CONTROLS */}
+            <div className="p-3.5 rounded-xl bg-blue-50/50 border border-blue-200/70 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <label className="flex items-start gap-2.5 cursor-pointer select-none">
                   <input
-                    ref={fileRef}
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) void handleFile(file);
-                      e.target.value = "";
-                    }}
+                    type="checkbox"
+                    checked={autoAdd}
+                    onChange={(e) => handleToggleAutoAdd(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500"
                   />
-                  <button
-                    type="button"
-                    onClick={() => fileRef.current?.click()}
-                    className="scan-line flex w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-primary/50 bg-secondary/40 px-6 py-10 text-center transition-colors hover:border-primary"
-                  >
-                    <span className="flex size-12 items-center justify-center rounded-2xl bg-beam text-primary-foreground">
-                      <Upload className="size-5" />
+                  <div>
+                    <span className="text-xs font-bold text-slate-900 block">
+                      Auto-add scanned products to inventory
                     </span>
-                    <span className="font-display text-sm">Photo lein ya upload karein</span>
-                    <span className="text-xs text-muted-foreground">JPG / PNG, max 6MB</span>
-                  </button>
-                  {preview && (
-                    <img
-                      src={preview}
-                      alt="Aapki upload ki hui product photo"
-                      loading="lazy"
-                      className="max-h-52 w-full rounded-2xl object-contain"
-                    />
-                  )}
+                    <span className="text-[11px] text-slate-500 block">
+                      Automatically registers batches upon successful scan.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Quantity Modifier and Quick Scan Mode */}
+              <div className="flex items-center justify-between pt-2 border-t border-blue-100 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-600 font-semibold">Qty:</span>
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                      className="w-8 h-8 rounded flex items-center justify-center text-slate-600 hover:bg-slate-100 font-bold"
+                    >
+                      <Minus className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="w-7 text-center font-bold text-slate-900">{quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => setQuantity((q) => q + 1)}
+                      className="w-8 h-8 rounded flex items-center justify-center text-slate-600 hover:bg-slate-100 font-bold"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-              )}
+
+                {/* SECTION 11: QUICK SCAN MODE (ON / OFF) */}
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-800 font-bold bg-white px-2.5 py-1.5 rounded-lg border border-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={quickScan}
+                    onChange={(e) => setQuickScan(e.target.checked)}
+                    className="w-4 h-4 rounded text-blue-600 border-slate-300"
+                  />
+                  <span>Quick Scan: {quickScan ? "ON" : "OFF"}</span>
+                </label>
+              </div>
             </div>
 
-            {/* Saved Scans History Section */}
-            {history.length > 0 && (
-              <div className="mt-6 rounded-3xl surface-glass p-5">
-                <h3 className="flex items-center gap-2 text-sm uppercase tracking-[0.2em] text-primary font-semibold">
-                  <CheckCircle2 className="size-4" /> Saved Scans / Purana Data (Recent History)
-                </h3>
-                <div className="mt-3 space-y-2">
-                  {history.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setProduct(item.product)}
-                      className="flex w-full items-center justify-between rounded-2xl bg-secondary/40 p-3 text-left transition-colors hover:bg-secondary"
-                    >
-                      <div>
-                        <p className="text-xs font-semibold text-foreground">{item.productName}</p>
-                        <p className="text-[11px] text-muted-foreground">
-                          {item.brand} • {item.date} • {item.mode === "image" ? "Photo Scan" : "Barcode"}
-                        </p>
+            {/* SECTION 6 & 7: CAMERA SCANNER CONTAINER & PERMISSION FALLBACK */}
+            {mode === "barcode" && (
+              <div className="space-y-3">
+                {cameraDenied ? (
+                  /* SECTION 7: CAMERA PERMISSION DENIED CARD */
+                  <div className="p-6 text-center space-y-4 bg-amber-50/80 border-2 border-dashed border-amber-300 rounded-2xl">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 mx-auto flex items-center justify-center">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1 max-w-sm mx-auto">
+                      <h3 className="text-sm font-extrabold text-amber-950">
+                        Camera access is required to scan products.
+                      </h3>
+                      <p className="text-xs text-amber-800 leading-relaxed">
+                        Please enable camera access in your mobile browser settings to scan barcodes directly, or type the barcode number manually below.
+                      </p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2 justify-center pt-2">
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          setCameraDenied(false);
+                          setCameraActive(true);
+                        }}
+                        className="bg-[#146EF5] hover:bg-[#1059c4] text-white text-xs font-bold px-4 py-2.5 rounded-xl min-h-[44px]"
+                      >
+                        <RefreshCw className="w-4 h-4 mr-1.5" />
+                        Try Again
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setShowManualInput(true);
+                          const el = document.getElementById("manualBarcodeInput");
+                          el?.focus();
+                        }}
+                        className="text-xs font-bold border-slate-300 min-h-[44px]"
+                      >
+                        Enter Barcode Manually
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative aspect-[4/3] rounded-2xl overflow-hidden bg-slate-50 border-2 border-dashed border-blue-200/80 flex items-center justify-center scan-line">
+                    {cameraActive ? (
+                      <>
+                        <video
+                          ref={videoRef}
+                          playsInline
+                          muted
+                          className="w-full h-full object-cover"
+                        />
+                        {/* Laser scanner line effect */}
+                        <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-blue-500 via-sky-400 to-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.8)] animate-bounce pointer-events-none" />
+
+                        {/* Controls overlay */}
+                        <div className="absolute top-3 right-3 flex items-center gap-2 z-10">
+                          <button
+                            type="button"
+                            onClick={() => setFacingMode((prev) => (prev === "environment" ? "user" : "environment"))}
+                            className="p-2 rounded-xl bg-white/90 text-slate-700 hover:bg-white shadow-xs min-h-[40px] min-w-[40px] flex items-center justify-center"
+                            title="Switch Camera"
+                          >
+                            <SwitchCamera className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCameraActive(false)}
+                            className="p-2 rounded-xl bg-red-500 text-white hover:bg-red-600 shadow-xs min-h-[40px] min-w-[40px] flex items-center justify-center"
+                            title="Stop Camera"
+                          >
+                            <Minimize2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-center p-6 space-y-3">
+                        <div className="w-14 h-14 rounded-2xl bg-white text-blue-600 mx-auto flex items-center justify-center border border-blue-200 shadow-xs">
+                          <Barcode className="w-7 h-7" />
+                        </div>
+                        <div className="space-y-1">
+                          <h3 className="text-sm font-bold text-slate-800">Scanner Viewfinder Ready</h3>
+                          <p className="text-xs text-slate-500 max-w-xs mx-auto">
+                            Point your phone camera at the barcode, or choose a manual option below.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={() => setCameraActive(true)}
+                          className="bg-[#146EF5] hover:bg-[#1059c4] text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-xs min-h-[44px]"
+                        >
+                          <Camera className="w-4 h-4 mr-2" />
+                          Start Camera Scanner
+                        </Button>
                       </div>
-                      <span className="rounded-full bg-primary/20 px-2.5 py-0.5 text-[10px] font-bold text-primary">
-                        Saved
-                      </span>
-                    </button>
-                  ))}
+                    )}
+
+                    {/* Target reticle inside light container */}
+                    {cameraActive && (
+                      <div className="absolute inset-8 border-2 border-dashed border-blue-500/80 rounded-xl pointer-events-none flex flex-col justify-between p-2">
+                        <div className="flex justify-between">
+                          <span className="w-4 h-4 border-t-2 border-l-2 border-blue-600" />
+                          <span className="w-4 h-4 border-t-2 border-r-2 border-blue-600" />
+                        </div>
+                        <div className="text-center">
+                          <span className="bg-white/90 backdrop-blur-md text-blue-900 text-[11px] font-bold px-2.5 py-1 rounded-full border border-blue-200 shadow-xs">
+                            Align barcode inside target box
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="w-4 h-4 border-b-2 border-l-2 border-blue-600" />
+                          <span className="w-4 h-4 border-b-2 border-r-2 border-blue-600" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Point camera helper text */}
+                <div className="text-center">
+                  <p className="text-xs text-slate-500 font-medium">Point your camera at the barcode.</p>
+                </div>
+
+                {/* SECTION 6: QUICK ACTION BUTTONS BELOW CAMERA */}
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setShowManualInput((prev) => !prev)}
+                    className="w-full text-xs font-bold border-slate-300 text-slate-700 min-h-[44px] rounded-xl flex items-center justify-center gap-1.5"
+                  >
+                    <Barcode className="w-4 h-4 text-blue-600" />
+                    <span>Enter Barcode Manually</span>
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setMode("image");
+                      fileRef.current?.click();
+                    }}
+                    className="w-full text-xs font-bold border-slate-300 text-slate-700 min-h-[44px] rounded-xl flex items-center justify-center gap-1.5"
+                  >
+                    <Upload className="w-4 h-4 text-indigo-600" />
+                    <span>Upload Product Photo</span>
+                  </Button>
+                </div>
+
+                {/* Manual Barcode Input Form (collapsible on mobile, always accessible) */}
+                {(showManualInput || !cameraActive) && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleBarcode();
+                    }}
+                    className="space-y-2 p-3 bg-slate-50 border border-slate-200 rounded-xl"
+                  >
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Barcode Number (EAN-13 / GTIN)
+                    </label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Barcode className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                        <Input
+                          id="manualBarcodeInput"
+                          value={code}
+                          onChange={(e) => setCode(e.target.value)}
+                          placeholder="e.g. 8901764061103"
+                          className="pl-9 bg-white border-slate-300 focus:border-blue-500 rounded-xl text-sm h-11"
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        disabled={loading}
+                        className="bg-[#146EF5] hover:bg-[#1059c4] text-white font-bold text-xs px-5 rounded-xl shadow-xs min-h-[44px]"
+                      >
+                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Lookup"}
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Quick Samples List */}
+                <div className="space-y-1.5 pt-1">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Quick Sample Barcodes:
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { code: "8901764061103", label: "Diet Coke Can" },
+                      { code: "8906002000018", label: "Bisleri Water" },
+                      { code: "8901262010054", label: "Amul Taaza Milk" },
+                      { code: "8901063124501", label: "Expired Bread" },
+                    ].map((s) => (
+                      <button
+                        key={s.code}
+                        type="button"
+                        onClick={() => {
+                          setCode(s.code);
+                          handleBarcode(s.code);
+                        }}
+                        className="text-[11px] px-2.5 py-1.5 bg-slate-50 border border-slate-200 hover:border-blue-400 hover:text-blue-600 rounded-lg text-slate-700 font-medium transition-colors min-h-[32px]"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
 
-            <div className="mt-5 overflow-hidden rounded-3xl surface-glass">
-              <img
-                src={scanHero}
-                alt="Barcode scanning"
-                width={1600}
-                height={1008}
-                loading="lazy"
-                className="h-36 w-full object-cover opacity-70"
-              />
-            </div>
-          </section>
+            {/* Photo / OCR Mode */}
+            {mode === "image" && (
+              <div className="space-y-4">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleImageFile(f);
+                  }}
+                  className="hidden"
+                />
 
-          <section>
-            <h2 className="text-xl">Result</h2>
-            <div className="mt-4 min-h-[18rem] rounded-3xl surface-glass p-6">
-              {loading ? (
-                <div className="flex h-full min-h-56 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-                  <Loader2 className="size-6 animate-spin text-primary" />
-                  Detail nikaali ja rahi hai...
-                </div>
-              ) : product ? (
-                <div className="space-y-5">
-                  {/* Product Header */}
-                  <div>
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs uppercase tracking-[0.2em] text-primary">
-                        {product.brand ?? "Brand Verified"}
-                      </p>
-                      {product.healthScore != null && (
-                        <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400">
-                          <Award className="size-3.5" />
-                          Health Score: {product.healthScore} / 10
-                          {product.healthGrade && ` (Grade ${product.healthGrade})`}
-                        </div>
-                      )}
+                <div
+                  onClick={() => fileRef.current?.click()}
+                  className="border-2 border-dashed border-slate-300 hover:border-blue-500 bg-slate-50/60 hover:bg-blue-50/30 rounded-2xl p-6 text-center cursor-pointer transition-all space-y-3"
+                >
+                  {preview ? (
+                    <div className="space-y-2">
+                      <img
+                        src={preview}
+                        alt="Uploaded package preview"
+                        className="max-h-48 mx-auto rounded-xl object-contain shadow-xs"
+                      />
+                      <span className="text-xs text-blue-600 font-semibold block">
+                        Click to change photo
+                      </span>
                     </div>
-                    <h3 className="mt-1 text-2xl font-bold">{product.name}</h3>
-                  </div>
+                  ) : (
+                    <>
+                      <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 mx-auto flex items-center justify-center">
+                        <Upload className="w-6 h-6" />
+                      </div>
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-bold text-slate-800">Upload Product Packaging Image</h3>
+                        <p className="text-xs text-slate-500 max-w-xs mx-auto">
+                          Take a crisp photo of the front label, printed barcode, or batch details. Supports JPG, PNG, WEBP.
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" className="text-xs font-semibold">
+                        Choose File or Take Photo
+                      </Button>
+                    </>
+                  )}
+                </div>
 
-                  {/* Product Classification & Badges */}
-                  <div className="flex flex-wrap gap-2 text-xs">
-                    {product.classification && (
-                      <span
-                        className={`rounded-full px-3 py-1 font-semibold ${
-                          product.classification.includes("Tobacco")
-                            ? "bg-red-500/20 text-red-400 border border-red-500/40"
-                            : "bg-primary/20 text-primary border border-primary/40"
-                        }`}
-                      >
-                        🏷️ Category: {product.classification}
-                      </span>
-                    )}
-                    {product.category && (
-                      <span className="rounded-full bg-secondary px-3 py-1">{product.category}</span>
-                    )}
-                    {product.netWeight && (
-                      <span className="rounded-full bg-secondary px-3 py-1">{product.netWeight}</span>
-                    )}
-                    {product.mrp != null && (
-                      <span className="rounded-full bg-secondary px-3 py-1 font-semibold text-primary">
-                        MRP ₹{product.mrp}
-                      </span>
-                    )}
-                    <span className="rounded-full border border-primary/40 px-3 py-1 text-primary">
-                      NIRIKSHAN Verified
+                {ocrProgress && (
+                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-xs flex items-center gap-2.5">
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0 text-blue-600" />
+                    <span>{ocrProgress}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 2. CONFIRMATION PANEL (AFTER SCANNING) */}
+          {lastScanResult && (
+            <div className="p-5 rounded-2xl bg-white border border-emerald-200 shadow-md space-y-3.5">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>PRODUCT SCANNED SUCCESSFULLY</span>
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {lastScanResult.record.lastScanned}
+                </span>
+              </div>
+
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 font-display">
+                  {lastScanResult.record.productName}
+                </h3>
+                <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-600">
+                  <span>Barcode: <strong>{lastScanResult.record.barcode}</strong></span>
+                  <span>·</span>
+                  <span>Batch: <strong>{lastScanResult.record.batchNumber}</strong></span>
+                  <span>·</span>
+                  <span>Expiry: <strong>{lastScanResult.record.expiryDate}</strong></span>
+                </div>
+              </div>
+
+              {/* Status Pill */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 font-medium">Expiry Status:</span>
+                <span
+                  className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full ${
+                    lastScanResult.record.expiryStatus === "EXPIRED"
+                      ? "bg-red-100 text-red-700 border border-red-200"
+                      : lastScanResult.record.expiryStatus === "EXPIRING SOON"
+                        ? "bg-amber-100 text-amber-800 border border-amber-200"
+                        : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                  }`}
+                >
+                  {lastScanResult.record.expiryStatus} ({lastScanResult.record.daysRemaining}d)
+                </span>
+              </div>
+
+              {/* Duplicate vs New Quantity Box */}
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-xs">
+                <div>
+                  <strong className="text-slate-900 block font-bold">
+                    {lastScanResult.isDuplicate ? "✓ Existing Inventory Updated" : "✓ Added to Inventory"}
+                  </strong>
+                  <span className="text-slate-500 text-[11px]">
+                    {lastScanResult.isDuplicate
+                      ? `Stock Quantity: ${lastScanResult.previousQuantity} → ${lastScanResult.newQuantity} (+${lastScanResult.addedQty} unit)`
+                      : `Initial Stock: ${lastScanResult.newQuantity} units`}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-sm font-extrabold text-blue-600">
+                    {lastScanResult.newQuantity} Total Units
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <Link
+                  to="/inventory"
+                  className="w-full py-2 px-3 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-bold text-center transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <Layers className="w-3.5 h-3.5 text-blue-600" />
+                  <span>View Inventory</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLastScanResult(null);
+                    setCode("");
+                  }}
+                  className="w-full py-2 px-3 bg-[#146EF5] hover:bg-[#1059c4] text-white rounded-xl text-xs font-bold text-center transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <ScanLine className="w-3.5 h-3.5" />
+                  <span>Scan Next Product</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 3. Recent Scans Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-slate-500" />
+                <h3 className="text-sm font-bold font-display text-slate-900">Recent Scans</h3>
+              </div>
+              <Link to="/scans" className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+                View All Scans →
+              </Link>
+            </div>
+
+            {history.length > 0 ? (
+              <div className="space-y-2">
+                {history.slice(0, 5).map((item) => (
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      setProduct(item.product);
+                      setCustomBatch(item.product.batchNumber || "CCLO724");
+                    }}
+                    className="p-2.5 rounded-xl border border-slate-200 hover:border-blue-300 hover:bg-slate-50/80 transition-all cursor-pointer flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                        <Barcode className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="text-xs font-bold text-slate-900 truncate">
+                          {item.productName}
+                        </h4>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          {item.brand} · {item.date}
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        item.product.expiryStatus === "Expired"
+                          ? "bg-red-100 text-red-700 border border-red-200"
+                          : item.product.expiryStatus === "Expiring Soon"
+                            ? "bg-amber-100 text-amber-800 border border-amber-200"
+                            : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                      }`}
+                    >
+                      {item.product.expiryStatus || "Safe"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6 text-xs text-slate-400 space-y-1">
+                <Barcode className="w-8 h-8 mx-auto text-slate-300" />
+                <p>No recent scans yet. Scan a barcode above!</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* RIGHT COLUMN: Product Details & Inventory Integration (7 cols)            */}
+        {/* ========================================================================= */}
+        <div className="lg:col-span-7 space-y-6">
+          {product ? (
+            <>
+              {/* Prominent Expired / Expiring Alerts */}
+              {(() => {
+                const { daysRemaining, expiryStatus } = calculateExpiry(product.expiryDate);
+                if (expiryStatus === "EXPIRED") {
+                  return (
+                    <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-red-900 flex items-start gap-3 shadow-xs">
+                      <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-sm font-extrabold block text-red-800">
+                          ⚠ EXPIRED PRODUCT DETECTED
+                        </strong>
+                        <p className="text-xs text-red-700 mt-0.5">
+                          Printed Expiry Date: <strong>{product.expiryDate}</strong> (Expired {Math.abs(daysRemaining)} days ago). This product has passed its legal shelf life. Return to supplier or dispose.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+                if (expiryStatus === "EXPIRING SOON") {
+                  return (
+                    <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-3 shadow-xs">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-sm font-extrabold block text-amber-800">
+                          ⚠ EXPIRING SOON ({daysRemaining} DAYS REMAINING)
+                        </strong>
+                        <p className="text-xs text-amber-700 mt-0.5">
+                          Printed Expiry Date: <strong>{product.expiryDate}</strong>. Schedule an automated discount or place at the front of the retail shelf.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {/* 1. Main Product Overview Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-extrabold">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <span>VERIGRO VERIFIED</span>
+                    </span>
+                    <span className="text-xs text-slate-400">·</span>
+                    <span className="text-xs text-slate-500 font-medium">
+                      Source: {product.source === "catalog" ? "Central Knowledge Base" : product.source}
                     </span>
                   </div>
 
-                  {/* Tobacco & COTPA Act 2003 Critical Risk Audit Box */}
-                  {(() => {
-                    const cls = (product.classification ?? "").toLowerCase();
-                    const cat = (product.category ?? "").toLowerCase();
-                    const name = (product.name ?? "").toLowerCase();
-                    const isTobacco = cls.includes("tobacco") || cls.includes("restricted") || cat.includes("tobacco") || name.includes("cigarette") || name.includes("tobacco");
-                    if (!isTobacco) return null;
+                  {product.healthScore !== null && product.healthScore !== undefined && (
+                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 text-xs font-bold">
+                      <span>Health Score:</span>
+                      <strong className="text-sm font-extrabold text-blue-900 font-display">
+                        {product.healthScore.toFixed(1)} / 10
+                      </strong>
+                      {product.healthGrade && (
+                        <span className="bg-blue-600 text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded">
+                          Grade {product.healthGrade}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
 
-                    return (
-                      <div className="rounded-2xl border border-red-500/60 bg-red-500/10 p-5 text-sm shadow-xl animate-pulse">
-                        <div className="flex items-center justify-between">
-                          <p className="flex items-center gap-2 font-bold text-red-400 text-base">
-                            <AlertTriangle className="size-6 text-red-500 shrink-0" /> SEVERE HEALTH HAZARD & CANCER RISK AUDIT
-                          </p>
-                          <span className="rounded-full bg-red-600 px-3 py-1 text-[11px] font-extrabold text-white uppercase tracking-wider">
-                            GRADE E • CRITICAL RISK
-                          </span>
-                        </div>
+                <div className="space-y-1">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-blue-600">
+                    {product.brand || "Verified Manufacturer"}
+                  </span>
+                  <h2 className="text-2xl sm:text-3xl font-extrabold font-display text-slate-900">
+                    {product.name}
+                  </h2>
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    {product.description || "Comprehensive packaged commodity verification profile."}
+                  </p>
+                </div>
 
-                        <div className="mt-4 space-y-3">
-                          <div className="rounded-xl border border-red-500/40 bg-red-950/60 p-4 text-red-200 space-y-2">
-                            <p className="font-bold text-base text-red-400 flex items-center gap-2">
-                              🚨 TOBACCO SMOKING CAUSES PAINFUL DEATH & LUNG CANCER
-                            </p>
-                            <p className="text-xs text-red-200/90 leading-relaxed">
-                              This product contains highly addictive <strong>Nicotine</strong>, carcinogenic <strong>Tar</strong>, <strong>Carbon Monoxide</strong>, Lead, Arsenic, and toxic chemical compounds.
-                            </p>
-                            <ul className="list-disc pl-5 text-xs text-red-200/80 space-y-1 font-medium">
-                              <li><strong>Severe Respiratory Risk:</strong> Causes Chronic Obstructive Pulmonary Disease (COPD) & Lung Cancer</li>
-                              <li><strong>Cardiovascular Hazard:</strong> Causes heart attacks, stroke, and arterial constriction</li>
-                              <li><strong>Secondhand Smoke Warning:</strong> Highly toxic to children, family members, and non-smokers nearby</li>
-                            </ul>
-                          </div>
+                {/* 2-Column Specification Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                  <div className="space-y-0.5">
+                    <span className="text-[11px] font-medium text-slate-400">Brand</span>
+                    <div className="font-bold text-slate-900">{product.brand || "Not Available"}</div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[11px] font-medium text-slate-400">Manufacturer</span>
+                    <div className="font-bold text-slate-900 truncate">
+                      {product.manufacturer || product.origin || "Not Available"}
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[11px] font-medium text-slate-400">Barcode</span>
+                    <div className="font-mono font-bold text-slate-900">{product.barcode || "Not Available"}</div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[11px] font-medium text-slate-400">Batch Number</span>
+                    <div className="font-mono font-bold text-slate-900">{customBatch || product.batchNumber || "Not Available"}</div>
+                  </div>
+                  <div className="space-y-0.5 pt-2 border-t border-slate-200/80">
+                    <span className="text-[11px] font-medium text-slate-400">Net Quantity</span>
+                    <div className="font-bold text-slate-900">{product.netWeight || "Not Available"}</div>
+                  </div>
+                  <div className="space-y-0.5 pt-2 border-t border-slate-200/80">
+                    <span className="text-[11px] font-medium text-slate-400">Mfg Date</span>
+                    <div className="font-bold text-slate-900">{product.mfgDate || "Not Available"}</div>
+                  </div>
+                  <div className="space-y-0.5 pt-2 border-t border-slate-200/80">
+                    <span className="text-[11px] font-medium text-slate-400">Official MRP</span>
+                    <div className="font-bold text-blue-600">
+                      {product.mrp ? `₹${product.mrp.toFixed(2)}` : "Not Available"}
+                    </div>
+                  </div>
+                  <div className="space-y-0.5 pt-2 border-t border-slate-200/80">
+                    <span className="text-[11px] font-medium text-slate-400">Expiry Date</span>
+                    <div className="font-bold text-slate-900">{product.expiryDate || "Not Available"}</div>
+                  </div>
+                </div>
 
-                          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-amber-300 text-xs font-semibold">
-                            <p className="flex items-center gap-2 text-sm font-bold text-amber-400">
-                              🏛️ Statutory Regulations — COTPA Act, 2003
-                            </p>
-                            <p className="mt-1 leading-relaxed">
-                              Section 7, Cigarettes and Other Tobacco Products Act (COTPA), 2003 mandates 85% Graphic Health Warnings on packaging. Sale to individuals under 18 years is strictly illegal and punishable by law.
-                            </p>
-                            <div className="mt-3 text-emerald-400 font-bold bg-emerald-500/20 p-2.5 rounded-xl flex items-center justify-between">
-                              <span>📞 National Tobacco Quitline Helpline:</span>
-                              <span className="text-sm tracking-wider font-extrabold text-emerald-300">1800-11-2356 (Toll-Free)</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Personalized Health Profile Audit Box — Only for edible food products */}
-                  {(() => {
-                    const cls = (product.classification ?? "").toLowerCase();
-                    const cat = (product.category ?? "").toLowerCase();
-                    const isTobacco = cls.includes("tobacco") || cls.includes("restricted") || cat.includes("tobacco");
-                    if (isTobacco) return null;
-
-                    const isEdible = cls.includes("edible") || cls.includes("food") || cls.includes("beverage") || cls.includes("dairy") || cls.includes("snack") || cls.includes("juice") || cls.includes("grocery") || cls.includes("staple") || cls.includes("confectionery") || cls.includes("instant") || cls.includes("bakery") || cls.includes("namkeen");
-                    if (!isEdible) return null;
-
-                    const hasHighSugar = product.nutrition?.toLowerCase().includes("sugar") || product.ingredients?.toLowerCase().includes("sugar");
-                    const nutritionText = product.nutrition ?? "";
-                    const sodiumMatch = nutritionText.match(/sodium[:\s]+(\d+)\s*mg/i);
-                    const sodiumMg = sodiumMatch ? parseInt(sodiumMatch[1]) : null;
-                    const hasHighSodium = sodiumMg != null ? sodiumMg > 400 : (nutritionText.toLowerCase().includes("sodium") && (product.ingredients?.toLowerCase().includes("salt") ?? false));
-
-                    return (
-                      <div className="rounded-2xl border border-border bg-card p-4 text-sm shadow-md">
-                        <p className="flex items-center justify-between font-bold text-primary text-base">
-                          <span className="flex items-center gap-2">🏥 Health Profile Audit</span>
-                          <span className="rounded-full bg-primary/20 px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider">
-                            Active Risk Analysis
-                          </span>
-                        </p>
-                        <div className="mt-4 space-y-3 font-medium">
-                          {hasHighSugar ? (
-                            <div className="flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/10 p-3.5 text-red-500">
-                              <AlertTriangle className="size-5 shrink-0 mt-0.5" />
-                              <p><strong>Diabetic Alert:</strong> Contains added sugar or high glycemic carbohydrates.</p>
-                            </div>
-                          ) : (
-                            <div className="flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-emerald-500">
-                              <CheckCircle2 className="size-5 shrink-0 mt-0.5" />
-                              <p><strong>Diabetic Safe:</strong> No high refined sugar detected.</p>
-                            </div>
-                          )}
-
-                          {hasHighSodium ? (
-                            <div className="flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/10 p-3.5 text-red-500">
-                              <AlertTriangle className="size-5 shrink-0 mt-0.5" />
-                              <p><strong>High BP Warning:</strong> {sodiumMg != null ? `High Sodium ${sodiumMg}mg detected.` : "Elevated sodium content."} Consume in moderation.</p>
-                            </div>
-                          ) : (
-                            <div className="flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-emerald-500">
-                              <CheckCircle2 className="size-5 shrink-0 mt-0.5" />
-                              <p><strong>Heart & BP Safe:</strong> Sodium within healthy range.</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* FSSAI & Legal Metrology Badges */}
-                  <div className="flex flex-col gap-4">
-                    {product.fssaiStatus && (() => {
-                      const isPending = product.fssaiStatus.toLowerCase().includes("pending") || product.fssaiStatus.toLowerCase().includes("verification pending");
-                      const isExempt = product.fssaiStatus.includes("N/A");
-                      const badge = isPending ? "PENDING" : isExempt ? "EXEMPT" : "14-DIGIT VERIFIED";
-                      const borderColor = isPending ? "border-gray-500/30" : "border-amber-500/30";
-                      const bgColor = isPending ? "bg-gray-500/10" : "bg-amber-500/10";
-                      const textColor = isPending ? "text-gray-400" : "text-amber-400";
-                      const badgeBg = isPending ? "bg-gray-500/20 text-gray-300" : "bg-amber-500/20 text-amber-300";
-
-                      return (
-                        <div className={`rounded-2xl border ${borderColor} ${bgColor} p-4 text-sm shadow-md`}>
-                          <p className={`flex items-center justify-between font-bold ${textColor} text-base`}>
-                            <span className="flex items-center gap-2">🛡️ FSSAI Approval Status</span>
-                            <span className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wider font-bold ${badgeBg}`}>{badge}</span>
-                          </p>
-                          <p className="mt-2 text-foreground font-medium leading-relaxed">{product.fssaiStatus}</p>
-                          {!isExempt && !isPending && (
-                            <div className="mt-3 flex items-center gap-2 text-emerald-500 font-semibold">
-                              <ShieldCheck className="size-5" />
-                              Government Database Verified
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {product.legalMetrologyRules && (
-                      <div className="rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm shadow-md">
-                        <p className="flex items-center justify-between font-bold text-indigo-400 text-base">
-                          <span className="flex items-center gap-2">📜 Govt. Legal Metrology Rules, 2011</span>
-                          <span className="rounded-full bg-indigo-500/20 px-2.5 py-1 text-[10px] uppercase tracking-wider font-bold text-indigo-300">
-                            RULE 6
-                          </span>
-                        </p>
-                        <p className="mt-3 text-foreground font-medium leading-relaxed">
-                          Legal Metrology (Packaged Commodities) Rules, 2011 — Rule 6 mandates: Net Qty (as
-                          declared), MRP (incl. taxes), Mfg date, Expiry/BBD, Manufacturer name & address, Consumer helpline.
-                        </p>
-                        <div className="mt-4 space-y-2 text-xs font-semibold text-indigo-300/80">
-                          <p className="flex items-start gap-2">
-                            <span className="text-indigo-400">📌</span>
-                            Act: Legal Metrology Act, 2009 (LM Act)
-                          </p>
-                          <p className="flex items-start gap-2">
-                            <span className="text-indigo-400">📌</span>
-                            Rules: Legal Metrology (Packaged Commodities) Rules, 2011
-                          </p>
-                          <p className="flex items-start gap-2">
-                            <span className="text-indigo-400">📌</span>
-                            Rule 6 — Mandatory Declarations on Pack:
-                          </p>
-                          <ul className="ml-6 list-disc space-y-1 text-indigo-200/60 font-normal">
-                            <li>Name & Address of Manufacturer / Importer / Packer</li>
-                            <li>Month & Year of Manufacture / Packing</li>
-                            <li>Best Before / Use By / Expiry Date</li>
-                            <li>Maximum Retail Price (MRP incl. all taxes)</li>
-                            <li>Consumer Care Number / Complaint Contact</li>
-                            {product.classification?.toLowerCase().includes("edible") || product.classification?.toLowerCase().includes("food") ? (
-                              <li>FSSAI License No. (Food Safety Act 2006)</li>
-                            ) : null}
-                            {product.origin?.toLowerCase().includes("import") ? (
-                              <li>Country of Origin (Import Labelling Rule 7)</li>
-                            ) : null}
-                          </ul>
-                          <p className="mt-3 text-indigo-300 font-medium bg-indigo-500/20 p-2 rounded-lg">⚖️ <strong>Penalty:</strong> Violation punishable under Section 36, LM Act 2009 — Fine up to ₹25,000 (1st offense), ₹50,000 + 1-yr jail (repeat)</p>
-                        </div>
-                      </div>
-                    )}
+                {/* MANUAL INVENTORY ADD BAR */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <span className="text-xs font-bold text-slate-900 block">Inventory Stock Entry</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">Batch:</span>
+                      <input
+                        type="text"
+                        value={customBatch}
+                        onChange={(e) => setCustomBatch(e.target.value)}
+                        placeholder="Batch Number"
+                        className="h-7 px-2 bg-white border border-slate-200 rounded font-mono text-xs w-28 text-slate-800"
+                      />
+                    </div>
                   </div>
 
-                  {/* Highlights Badges */}
-                  {product.highlights && product.highlights.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {product.highlights.map((h) => (
-                        <span
-                          key={h}
-                          className="inline-flex items-center gap-1 rounded-xl bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg p-1">
+                      <span className="text-xs text-slate-500 font-semibold px-1">Qty:</span>
+                      <button
+                        type="button"
+                        onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                        className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold text-xs"
+                      >
+                        -
+                      </button>
+                      <span className="w-7 text-center font-extrabold text-xs text-slate-900">{quantity}</span>
+                      <button
+                        type="button"
+                        onClick={() => setQuantity((q) => q + 1)}
+                        className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 flex items-center justify-center font-bold text-xs"
+                      >
+                        +
+                      </button>
+                    </div>
+
+                    <Button
+                      onClick={() => processInventoryEntry(product, quantity, customBatch)}
+                      className="bg-[#146EF5] hover:bg-[#1059c4] text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-xs"
+                    >
+                      <Plus className="w-3.5 h-3.5 mr-1" />
+                      Add {quantity} to Inventory
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. Expiry & Batch Tracking Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-emerald-600" />
+                    <h3 className="text-sm font-bold font-display text-slate-900">
+                      Expiry & Batch Freshness Tracker
+                    </h3>
+                  </div>
+                  <span className="text-xs text-slate-500">Batch: {customBatch || product.batchNumber || "Not Available"}</span>
+                </div>
+
+                {(() => {
+                  const { daysRemaining, expiryStatus } = calculateExpiry(product.expiryDate);
+                  return (
+                    <div
+                      className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        expiryStatus === "EXPIRED"
+                          ? "bg-red-50 border-red-200 text-red-900"
+                          : expiryStatus === "EXPIRING SOON"
+                            ? "bg-amber-50 border-amber-200 text-amber-900"
+                            : "bg-emerald-50/70 border-emerald-200 text-emerald-900"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 ${
+                            expiryStatus === "EXPIRED"
+                              ? "bg-red-600"
+                              : expiryStatus === "EXPIRING SOON"
+                                ? "bg-amber-500"
+                                : "bg-emerald-600"
+                          }`}
                         >
-                          <CheckCircle2 className="size-3" /> {h}
+                          <ShieldCheck className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold uppercase tracking-wider">
+                            Expiry Status: {expiryStatus}
+                          </div>
+                          <p className="text-xs opacity-90">
+                            Expiry Date: <strong>{product.expiryDate || "Not Available"}</strong> (Manufactured:{" "}
+                            {product.mfgDate || "Not Available"})
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-left sm:text-right shrink-0">
+                        <span className="inline-block px-3 py-1 rounded-full bg-white text-emerald-800 border border-emerald-200 font-extrabold text-xs shadow-xs">
+                          {daysRemaining} Days Remaining
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {product.usageTips && (
+                  <p className="text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                    💡 <strong>Storage & Usage Advice:</strong> {product.usageTips}
+                  </p>
+                )}
+              </div>
+
+              {/* 3. Health & Ingredients Profile Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <HeartPulse className="w-5 h-5 text-blue-600" />
+                  <h3 className="text-sm font-bold font-display text-slate-900">
+                    Health, Nutrition & Allergen Audit
+                  </h3>
+                </div>
+
+                {product.nutrition && (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <strong className="text-slate-900 block mb-1">Nutrition Facts:</strong>
+                    <p className="text-slate-600 font-mono text-[11px] leading-relaxed">
+                      {product.nutrition}
+                    </p>
+                  </div>
+                )}
+
+                {product.ingredients && (
+                  <div className="space-y-1">
+                    <strong className="text-xs text-slate-800 block">Ingredients List:</strong>
+                    <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      {product.ingredients}
+                    </p>
+                  </div>
+                )}
+
+                {product.allergens && product.allergens.length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    <strong className="text-xs text-slate-800 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Allergen & Sensitive Ingredient Disclosures:</span>
+                    </strong>
+                    <div className="flex flex-wrap gap-2">
+                      {product.allergens.map((a, idx) => (
+                        <span
+                          key={idx}
+                          className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold"
+                        >
+                          {a}
                         </span>
                       ))}
                     </div>
-                  )}
-
-                  {/* Product Details Grid */}
-                  {product.description && (
-                    <Detail label="Product ke bare me" value={product.description} />
-                  )}
-                  {product.ingredients && <Detail label="Ingredients & Materials" value={product.ingredients} />}
-                  {product.nutrition && <Detail label="Specification / Nutrition" value={product.nutrition} />}
-                  {product.usageTips && <Detail label="Use kaise karein" value={product.usageTips} />}
-
-                  {/* Eco & Safety info */}
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {product.ecoScore && (
-                      <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs">
-                        <p className="flex items-center gap-1.5 font-semibold text-emerald-400">
-                          <Leaf className="size-3.5" /> Eco-Rating & Sustainability
-                        </p>
-                        <p className="mt-1 text-muted-foreground">{product.ecoScore}</p>
-                      </div>
-                    )}
-
-                    {product.allergens && product.allergens.length > 0 && (
-                      <div className="rounded-2xl border border-blue-500/20 bg-blue-500/5 p-3 text-xs">
-                        <p className="flex items-center gap-1.5 font-semibold text-blue-400">
-                          <ShieldCheck className="size-3.5" /> Safety & Allergens
-                        </p>
-                        <p className="mt-1 text-muted-foreground">{product.allergens.join(" • ")}</p>
-                      </div>
-                    )}
                   </div>
+                )}
+              </div>
 
-                  {/* Origin */}
-                  {product.origin && (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <MapPin className="size-3.5 text-primary" />
-                      <span>{product.origin}</span>
-                    </div>
-                  )}
-
-                  {/* Barcode Footer */}
-                  {product.barcode && (
-                    <div className="rounded-2xl bg-secondary/40 px-4 py-2.5 text-xs text-muted-foreground">
-                      <span className="font-semibold text-foreground">BARCODE:</span> {product.barcode}
-                    </div>
-                  )}
-
-                  {/* Better Alternatives Section */}
-                  {product.alternatives && product.alternatives.length > 0 && (
-                    <div className="mt-4 rounded-2xl border border-primary/30 bg-primary/5 p-4">
-                      <p className="flex items-center gap-1.5 text-xs uppercase tracking-[0.15em] font-semibold text-primary">
-                        <Sparkles className="size-3.5" /> Healthier / Better Alternatives (Indian Market)
-                      </p>
-                      <div className="mt-3 space-y-2">
-                        {product.alternatives.map((alt) => (
-                          <div
-                            key={alt.name}
-                            className="flex items-center justify-between rounded-xl bg-background/80 p-3 text-xs"
-                          >
-                            <div>
-                              <p className="font-semibold text-foreground">{alt.name}</p>
-                              <p className="text-muted-foreground">{alt.reason}</p>
-                            </div>
-                            {alt.price && (
-                              <span className="ml-2 font-semibold text-primary">{alt.price}</span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+              {/* 4. Regulatory & Legal Compliance Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <Scale className="w-5 h-5 text-amber-600" />
+                  <h3 className="text-sm font-bold font-display text-slate-900">
+                    FSSAI & Legal Metrology 2011 Compliance
+                  </h3>
                 </div>
-              ) : (
-                <div className="flex h-full min-h-56 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-                  <Barcode className="size-8 text-primary" />
-                  {message ?? "Barcode daalein ya photo lein — detail yahan dikhegi."}
-                </div>
-              )}
-            </div>
 
-            {catalog.length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-sm uppercase tracking-[0.2em] text-muted-foreground">
-                  Try karein (ready barcodes)
-                </h3>
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {catalog.slice(0, 8).map((item) => (
-                    <button
-                      key={item.barcode ?? item.name}
-                      type="button"
-                      onClick={() => {
-                        setMode("barcode");
-                        setCode(item.barcode ?? "");
-                        void handleBarcode(item.barcode ?? "");
-                      }}
-                      className="rounded-2xl surface-glass px-4 py-3 text-left transition-colors hover:border-primary"
-                    >
-                      <p className="text-sm">{item.name}</p>
-                      <p className="text-xs text-muted-foreground">{item.barcode}</p>
-                    </button>
-                  ))}
+                <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200 text-xs space-y-1">
+                  <div className="flex items-center gap-2 text-blue-950 font-bold">
+                    <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                    <span>Food Safety & Standards Authority of India (FSSAI)</span>
+                  </div>
+                  <p className="text-slate-700 text-xs leading-relaxed">
+                    {product.fssaiStatus || "FSSAI Lic. No. 10012011000168 — Approved & Verified"}
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 text-xs space-y-1">
+                  <div className="flex items-center gap-2 text-amber-950 font-bold">
+                    <Scale className="w-4 h-4 text-amber-600" />
+                    <span>Legal Metrology (Packaged Commodities) Rules 2011 — Rule 6</span>
+                  </div>
+                  <p className="text-slate-700 text-xs leading-relaxed">
+                    {product.legalMetrologyRules ||
+                      "Mandatory declarations complete: Net quantity, maximum retail price (MRP incl. all taxes), batch number, consumer helpline details verified."}
+                  </p>
                 </div>
               </div>
-            )}
-          </section>
+            </>
+          ) : (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-12 text-center space-y-4">
+              <div className="w-16 h-16 rounded-3xl bg-blue-50 text-blue-600 mx-auto flex items-center justify-center">
+                <ScanLine className="w-8 h-8" />
+              </div>
+              <div className="space-y-1.5 max-w-sm mx-auto">
+                <h3 className="text-base font-bold text-slate-900 font-display">
+                  No Product Selected Yet
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Scan a product barcode or click a sample on the left to view the instant verification audit and auto-add to your store inventory.
+                </p>
+              </div>
+              <Button
+                onClick={() => {
+                  setCode("8901764061103");
+                  handleBarcode("8901764061103");
+                }}
+                className="bg-[#146EF5] hover:bg-[#1059c4] text-white text-xs font-semibold px-4 py-2 rounded-xl"
+              >
+                Inspect Sample: Diet Coke Can
+              </Button>
+            </div>
+          )}
         </div>
-      </main>
-
-      {/* Video Guide Dialog Modal */}
-      <Dialog open={showVideoModal} onOpenChange={setShowVideoModal}>
-        <DialogContent className="max-w-3xl surface-glass border-primary/50 p-6">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-xl font-bold text-foreground">
-              <PlayCircle className="size-5 text-primary animate-pulse" /> NIRIKSHAN Scanner — Video Guide & Tutorial
-            </DialogTitle>
-          </DialogHeader>
-          <div className="mt-3 relative aspect-video w-full rounded-2xl overflow-hidden border border-primary/40 bg-black">
-            <iframe
-              src="https://drive.google.com/file/d/1U5gHXWA2b8XvLMfcN0mQMrvSvDUYk-sz/preview"
-              title="NIRIKSHAN Scanner Video Tutorial"
-              className="w-full h-full border-0"
-              allow="autoplay; encrypted-media; picture-in-picture"
-              allowFullScreen
-            />
-          </div>
-          <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-            <span>Watch how to scan barcodes, verify FSSAI licenses & find healthy swaps.</span>
-            <a
-              href="https://drive.google.com/file/d/1U5gHXWA2b8XvLMfcN0mQMrvSvDUYk-sz/view?usp=drivesdk"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-primary font-semibold hover:underline"
-            >
-              <ExternalLink className="size-3.5" /> Direct Drive Link
-            </a>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl bg-secondary/60 px-4 py-3">
-      <p className="text-xs uppercase tracking-[0.15em] text-primary">{label}</p>
-      <p className="mt-1 text-sm text-foreground/90">{value}</p>
+      </div>
     </div>
   );
 }

@@ -1,8 +1,8 @@
-# NIRIKSHAN (निरीक्षण) 🔍
+# VERIGRO 🔍
 
-> **Consumer Product Intelligence & Scanner for Everyday Indian Products**
+> **Verify Products. Manage Stores. Shop Smarter.**
 
-NIRIKSHAN is an intelligent scanner web application designed to bring radical transparency to packaged consumer goods across India. By scanning barcodes or uploading packaging images, consumers instantly receive detailed nutritional insights, additive breakdowns, allergy alerts, health scores, and cleaner alternatives.
+VERIGRO is an intelligent scanner and consumer intelligence web application designed to bring radical transparency to packaged consumer goods across India. By scanning barcodes or uploading packaging images, consumers and retailers instantly receive detailed nutritional insights, additive breakdowns, allergy alerts, health scores, and cleaner alternatives.
 
 ---
 

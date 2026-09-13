@@ -1,0 +1,19 @@
+{
+  "name": "VERIGRO — Verify Products. Manage Stores. Shop Smarter.",
+  "short_name": "VERIGRO",
+  "description": "Intelligent grocery product verification and store inventory management platform.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFFFFF",
+  "theme_color": "#146EF5",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "64x64 128x128 256x256 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

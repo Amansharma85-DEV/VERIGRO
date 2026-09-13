@@ -32,6 +32,71 @@ function fromRow(row: Row): ProductInfo {
 
 // Static comprehensive database for Indian & Global products with FSSAI & Legal Metrology 2011 Rules
 const KNOWLEDGE_BASE: Record<string, ProductInfo> = {
+  "8901764061103": {
+    name: "Diet Coke Can (300ml)",
+    brand: "Coca-Cola",
+    manufacturer: "Coca-Cola India Pvt. Ltd.",
+    category: "Carbonated Soft Drinks / Low Calorie",
+    netWeight: "300 ml",
+    mrp: 40.0,
+    batchNumber: "CCLO724",
+    mfgDate: "01 Jul 2024",
+    expiryDate: "30 Jun 2025",
+    stockQuantity: 48,
+    daysRemaining: 290,
+    expiryStatus: "Safe",
+    imageUrl: "https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=600&auto=format&fit=crop&q=80",
+    description:
+      "Diet Coke is a calorie-free, sugar-free carbonated soft drink sweetened with aspartame and acesulfame potassium. Certified under FSSAI food safety regulations.",
+    ingredients:
+      "Carbonated Water, Acidity Regulators (338, 330), Sweeteners (951 - Aspartame, 950 - Acesulfame Potassium), Preservative (211 - Sodium Benzoate), Caffeine.",
+    nutrition:
+      "Energy: 0 kcal | Protein: 0g | Total Carbohydrates: 0g (Sugar: 0g) | Total Fat: 0g | Sodium: 12mg per 100ml",
+    usageTips:
+      "Chilled serve karein. Can kholne ke baad turant consume karein. Direct dhoop se door thandi jagah rakhein.",
+    barcode: "8901764061103",
+    healthScore: 7.0,
+    healthGrade: "B",
+    ecoScore: "100% Recyclable Aluminium Can (Grade A Circular Recycling)",
+    allergens: [
+      "⚠️ Contains Phenylalanine (Aspartame sweetener)",
+      "⚠️ Contains Caffeine (Not recommended for children or pregnant women)",
+    ],
+    origin: "Made in India (Coca-Cola India Pvt. Ltd., Gurugram, Haryana)",
+    fssaiStatus: "FSSAI Lic. No. 10012011000168 — Approved & Verified (Central License Active)",
+    fssaiLicNo: "10012011000168",
+    fssaiVerifiedFormat: true,
+    classification: "Edible / Food & Beverage",
+    legalMetrologyRules:
+      "Legal Metrology (Packaged Commodities) Rules 2011 Compliant — Rule 6 Mandatory Declarations Complete (Net Qty 300ml, Batch CCLO724, MRP ₹40.00 incl. of all taxes, Consumer Care Toll Free: 1800-208-2653).",
+    highlights: [
+      "VERIGRO VERIFIED — Safe & Authentic Product",
+      "Zero Sugar & Zero Calories Formula",
+      "FSSAI License #10012011000168 Active & Verified",
+      "100% Recyclable Aluminium Can (Blue Bin)",
+    ],
+    alternatives: [
+      {
+        name: "Coke Zero Sugar Can 300ml",
+        brand: "Coca-Cola",
+        price: "₹40",
+        reason: "Authentic Coca-Cola classic taste with zero sugar formulation",
+      },
+      {
+        name: "Raw Pressery Cold-Pressed Valencia Orange",
+        brand: "Raw Pressery",
+        price: "₹80",
+        reason: "100% real fruit juice with no artificial sweeteners or preservatives",
+      },
+      {
+        name: "Paper Boat Sparkling Coconut Water",
+        brand: "Paper Boat",
+        price: "₹50",
+        reason: "Natural hydration alternative with zero added sugar and natural electrolytes",
+      },
+    ],
+    source: "catalog",
+  },
   "89008751": {
     name: "Classic Regular Filter Cigarettes (10 Cigarettes Pack)",
     brand: "Classic (ITC Limited)",
@@ -1205,7 +1270,7 @@ function generateSmartProduct(codeOrQuery: string): ProductInfo {
     category: classified.classification,
     netWeight: "As per package label",
     mrp: null,
-    description: `Barcode ${code} scanned. Product details not yet in NIRIKSHAN database. For exact details, check the physical product label. All Indian packaged goods must comply with Legal Metrology Act 2009 & FSSAI Act 2006.`,
+    description: `Barcode ${code} scanned. Product details not yet in VERIGRO database. For exact details, check the physical product label. All Indian packaged goods must comply with Legal Metrology Act 2009 & FSSAI Act 2006.`,
     ingredients: "Refer to printed ingredients list on product packaging.",
     nutrition: "Refer to Nutritional Facts panel on product packaging.",
     usageTips: "Refer to usage instructions printed on the product.",
@@ -1262,7 +1327,7 @@ export const lookupBarcode = createServerFn({ method: "POST" })
     try {
       const res = await fetch(
         `https://world.openfoodfacts.org/api/v2/product/${data.code}.json?fields=product_name,brands,categories,quantity,ingredients_text,nutriments,generic_name,countries_tags,labels_tags,packaging`,
-        { headers: { "User-Agent": "NIRIKSHAN/1.0 (nirikshan.in)" }, signal: AbortSignal.timeout(6000) },
+        { headers: { "User-Agent": "VERIGRO/1.0 (verigro.in)" }, signal: AbortSignal.timeout(6000) },
       );
       if (res.ok) {
         const json = (await res.json()) as {
@@ -1324,7 +1389,7 @@ export const lookupBarcode = createServerFn({ method: "POST" })
               category: rawCategory.split(",")[0]?.trim() || classified.classification,
               netWeight: String(p["quantity"] ?? "See packaging"),
               mrp: null,
-              description: String(p["generic_name"] ?? `${rawName} — scanned via NIRIKSHAN product intelligence.`),
+              description: String(p["generic_name"] ?? `${rawName} — scanned via VERIGRO product intelligence.`),
               ingredients: rawIngredients || "Refer to product label",
               nutrition: nutritionStr || "Refer to Nutrition Facts panel on pack",
               usageTips: "Store in cool, dry place. Follow instructions on product label.",
@@ -1492,7 +1557,7 @@ export const identifyFromImage = createServerFn({ method: "POST" })
     return {
       product: {
         name: `Product Photo Scan — ${cleanTitle.slice(0, 45)}`,
-        brand: "NIRIKSHAN Photo Audit",
+        brand: "VERIGRO Photo Audit",
         category: isNonFood ? "Personal Care / Non-Edible Commodity" : "General Packaged Commodity",
         netWeight: "As per package label",
         mrp: null,
