@@ -68,7 +68,9 @@ export function getCurrentStoreId(): string {
       if (parsed?.id) return `store_${parsed.id}`;
       if (parsed?.email) return `store_${parsed.email.replace(/[^a-zA-Z0-9]/g, "_")}`;
     }
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
   return "store_default";
 }
 
@@ -106,7 +108,9 @@ export function calculateExpiry(expiryDateStr?: string | null): {
       }
       return { daysRemaining: days, expiryStatus: "SAFE" };
     }
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
 
   return { daysRemaining: 180, expiryStatus: "SAFE" };
 }
@@ -268,7 +272,9 @@ export function saveStoreInventory(records: InventoryRecord[], storeId: string =
     localStorage.setItem(key, JSON.stringify(records));
     // Trigger custom event so all active tabs/components re-render immediately
     window.dispatchEvent(new CustomEvent("verigro_inventory_updated", { detail: { storeId, count: records.length } }));
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 // Log inventory activity
@@ -286,7 +292,9 @@ export function logInventoryActivity(activity: Omit<InventoryActivity, "id" | "t
     const updated = [newEntry, ...list].slice(0, 30);
     localStorage.setItem(key, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent("verigro_activity_logged", { detail: newEntry }));
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 // Retrieve activities
@@ -296,7 +304,9 @@ export function getStoreActivities(storeId: string = getCurrentStoreId()): Inven
     const key = `verigro_activities_${storeId}`;
     const data = localStorage.getItem(key);
     if (data) return JSON.parse(data);
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
   return [
     {
       id: "act-1",

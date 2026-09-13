@@ -45,7 +45,9 @@ function ScansHistoryPage() {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed)) setHistory(parsed);
         }
-      } catch {}
+      } catch (error) {
+        console.error(error);
+      }
     }
   }, []);
 

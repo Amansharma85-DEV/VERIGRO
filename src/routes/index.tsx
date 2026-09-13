@@ -103,7 +103,9 @@ function HomePage() {
           try {
             const parsed = JSON.parse(saved);
             setUserEmail(parsed.email || parsed.name || null);
-          } catch {}
+          } catch (error) {
+            console.error(error);
+          }
         }
       }
     });

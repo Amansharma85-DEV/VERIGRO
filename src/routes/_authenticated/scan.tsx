@@ -153,6 +153,7 @@ function ScanPage() {
   const [cameraActive, setCameraActive] = useState(searchParams.autostart === "1");
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scanLoopActiveRef = useRef(false);
 
   const [history, setHistory] = useState<
     Array<{
@@ -178,7 +179,9 @@ function ScanPage() {
             setHistory(parsed);
           }
         }
-      } catch {}
+      } catch (error) {
+        console.error(error);
+      }
     }
 
     // Default to Diet Coke or param lookup
@@ -191,6 +194,8 @@ function ScanPage() {
         }
       })
       .catch(() => {});
+    // Intentionally runs once on mount to read the initial URL params and seed history.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleToggleAutoAdd(val: boolean) {
@@ -238,6 +243,7 @@ function ScanPage() {
   }
 
   function stopCamera() {
+    scanLoopActiveRef.current = false;
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       mediaStreamRef.current = null;
@@ -249,10 +255,10 @@ function ScanPage() {
 
   // Barcode detector continuous loop from camera
   function startContinuousBarcodeScan() {
-    let active = true;
+    scanLoopActiveRef.current = true;
 
     const scanFrame = async () => {
-      if (!active || !videoRef.current || !cameraActive) return;
+      if (!scanLoopActiveRef.current || !videoRef.current || !cameraActive) return;
       if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
         try {
           if ("BarcodeDetector" in window) {
@@ -273,9 +279,11 @@ function ScanPage() {
               }
             }
           }
-        } catch {}
+        } catch (error) {
+          console.error(error);
+        }
       }
-      if (active && cameraActive) {
+      if (scanLoopActiveRef.current && cameraActive) {
         requestAnimationFrame(scanFrame);
       }
     };
@@ -313,7 +321,9 @@ function ScanPage() {
           source: found?.source ?? null,
         },
       });
-    } catch {}
+    } catch (error) {
+      console.error(error);
+    }
   }
 
   // Add current product to inventory
@@ -421,7 +431,9 @@ function ScanPage() {
           const c = String(barcodes[0].rawValue).replace(/\D/g, "");
           if (c.length >= 5) return c;
         }
-      } catch {}
+      } catch (error) {
+        console.error(error);
+      }
     }
 
     try {
@@ -431,7 +443,9 @@ function ScanPage() {
         const c = zxRes.getText().replace(/\D/g, "");
         if (c.length >= 5) return c;
       }
-    } catch {}
+    } catch (error) {
+      console.error(error);
+    }
 
     return null;
   }

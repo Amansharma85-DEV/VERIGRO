@@ -52,7 +52,9 @@ function SettingsPage() {
               storeName: parsed.storeName || prev.storeName,
             }));
           }
-        } catch {}
+        } catch (error) {
+          console.error(error);
+        }
       }
     }
   }, []);

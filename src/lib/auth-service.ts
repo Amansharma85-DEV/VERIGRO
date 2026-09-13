@@ -101,7 +101,9 @@ async function ensureSeededAccounts(): Promise<UserAccount[]> {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
   return [];
 }
 
@@ -113,7 +115,9 @@ export function getRegisteredUsers(): UserAccount[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
   return [];
 }
 
@@ -121,7 +125,9 @@ export function saveRegisteredUsers(users: UserAccount[]): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(USERS_DB_KEY, JSON.stringify(users));
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 // -------------------------------------------------------------
@@ -161,7 +167,9 @@ export function getSession(): UserSession | null {
         return session;
       }
     }
-  } catch {}
+  } catch (error) {
+    console.error(error);
+  }
 
   return null;
 }

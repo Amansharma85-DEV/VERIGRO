@@ -115,7 +115,9 @@ function AuthenticatedLayout() {
         const inv = getStoreInventory(getCurrentStoreId());
         const count = inv.filter((i) => i.expiryStatus === "EXPIRING SOON" || i.expiryStatus === "EXPIRED").length;
         setExpiringAlerts(count);
-      } catch {}
+      } catch (error) {
+        console.error(error);
+      }
     }
     updateAlerts();
     window.addEventListener("verigro_inventory_updated", updateAlerts);

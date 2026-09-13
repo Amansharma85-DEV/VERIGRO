@@ -90,7 +90,9 @@ function DashboardPage() {
             if (parsed?.storeName) setStoreName(parsed.storeName);
             if (parsed?.role) setUserRole(parsed.role);
           }
-        } catch {}
+        } catch (error) {
+          console.error(error);
+        }
       }
     }
 
